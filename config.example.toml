@@ -9,8 +9,8 @@ windows_wsl_setup_acknowledged = true
 
 [model_providers.OpenAI]
 name = "OpenAI"
-api_key="sk-10e7c754480fadd7df218da15072c1e748c26182100f0eb725cd510498121d8b"
-base_url = "https://vip.j3gb.com/v1"
+api_key="你的密钥"
+base_url = "你的url"
 model="gpt-5.6-sol"
 timeout = 15.0
 max_retries = 0
