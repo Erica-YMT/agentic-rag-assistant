@@ -1,0 +1,35 @@
+[llm]
+model_provider = "OpenAI"
+model = "gpt-5.6-sol"
+review_model = "gpt-5.5"
+model_reasoning_effort = "high"
+disable_response_storage = true
+network_access = "enabled"
+windows_wsl_setup_acknowledged = true
+
+[model_providers.OpenAI]
+name = "OpenAI"
+api_key="sk-10e7c754480fadd7df218da15072c1e748c26182100f0eb725cd510498121d8b"
+base_url = "https://vip.j3gb.com/v1"
+model="gpt-5.6-sol"
+timeout = 15.0
+max_retries = 0
+wire_api = "responses"
+requires_openai_auth = false
+
+[features]
+goals = true
+
+[windows]
+sandbox = "elevated"
+
+[projects.'d:\workandstudy\code\python']
+trust_level = "trusted"
+
+[projects."/home/tammye_erica/ai"]
+trust_level = "trusted"
+
+[embedding]
+model_path = "/home/tammye_erica/.cache/modelscope/models/AI-ModelScope--bge-small-zh-v1.5/snapshots/master"
+index_path = "faiss_index"
+top_k = 3

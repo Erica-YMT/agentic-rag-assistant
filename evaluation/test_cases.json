@@ -1,0 +1,56 @@
+[
+  {
+    "name": "普通聊天",
+    "question": "你好",
+    "expected_tools": [],
+    "expected_keywords": [],
+    "expected_retrieval_keywords": [],
+    "manual_review": true
+  },
+  {
+    "name": "计算工具",
+    "question": "计算123*456",
+    "expected_tools": [
+      "calculator"
+    ],
+    "expected_keywords": [
+      "56088"
+    ],
+    "expected_retrieval_keywords": [],
+    "manual_review": false
+  },
+  {
+    "name": "知识库检索",
+    "question": "请查询知识库，说明RAG项目的用途和基本流程",
+    "expected_tools": [
+      "search_knowledge"
+    ],
+    "expected_keywords": [
+      "本地资料",
+      "向量"
+    ],
+    "expected_retrieval_keywords": [
+      "本地资料",
+      "向量"
+    ],
+    "manual_review": true
+  },
+  {
+    "name": "多工具任务",
+    "question": "计算123*456，并查询知识库说明RAG项目的用途和基本流程",
+    "expected_tools": [
+      "calculator",
+      "search_knowledge"
+    ],
+    "expected_keywords": [
+      "56088",
+      "本地资料",
+      "向量"
+    ],
+    "expected_retrieval_keywords": [
+      "本地资料",
+      "向量"
+    ],
+    "manual_review": true
+  }
+]

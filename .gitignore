@@ -1,0 +1,30 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 本地虚拟环境
+.venv/
+venv/
+
+# 本地私密配置
+config.toml
+auth.json
+
+# 本地模型文件
+bge-small/
+
+# Jupyter 缓存
+.ipynb_checkpoints/
+
+# 系统与编辑器文件
+.DS_Store
+.vscode/
+.idea/
+
+# 历史评估结果
+evaluation/results/evaluation_*.json
+# Local development notes
+note.md
+
+# Local development notes
+note.md
