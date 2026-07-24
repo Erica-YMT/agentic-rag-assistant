@@ -1,0 +1,71 @@
+[
+  {
+    "id": "project_modules",
+    "query": "这个 Agent 项目的主要模块有哪些？",
+    "should_retrieve": true,
+    "expected_sources": [
+      "项目架构说明.md"
+    ],
+    "expected_keywords": [
+      "agent.py",
+      "tools.py",
+      "knowledge_base.py",
+      "build_index.py"
+    ]
+  },
+  {
+    "id": "build_index_role",
+    "query": "build_index.py 的作用是什么？",
+    "should_retrieve": true,
+    "expected_sources": [
+      "项目架构说明.md"
+    ],
+    "expected_keywords": [
+      "data/knowledge",
+      "文本切分",
+      "FAISS",
+      "向量"
+    ]
+  },
+  {
+    "id": "agent_core",
+    "query": "这个项目中哪个模块负责工具调用和任务调度？",
+    "should_retrieve": true,
+    "expected_sources": [
+      "项目架构说明.md"
+    ],
+    "expected_keywords": [
+      "agent.py",
+      "工具调用",
+      "调度"
+    ]
+  },
+  {
+    "id": "rag_concepts",
+    "query": "学习 Agent 开发需要掌握哪些 RAG 概念？",
+    "should_retrieve": true,
+    "expected_sources": [
+      "agents学习路线.md"
+    ],
+    "expected_keywords": [
+      "Embedding",
+      "向量数据库",
+      "Chunk",
+      "Top-k"
+    ]
+  },
+  {
+    "id": "unknown_revenue",
+    "query": "这个项目明年的商业收入目标是多少？",
+    "should_retrieve": false,
+    "expected_sources": [],
+    "expected_keywords": []
+  },
+  {
+    "id": "irrelevant_history",
+    "query": "唐朝哪位皇帝最喜欢吃西瓜？",
+    "should_retrieve": false,
+    "expected_sources": [],
+    "expected_keywords": []
+  }
+]

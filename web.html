@@ -1,0 +1,1084 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agentic RAG Assistant</title>
+  <style>
+    :root {
+      --accent: #5b7bdf;
+      --accent-strong: #4a66d1;
+      --accent-light: rgba(91, 123, 223, 0.1);
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --card: #ffffff;
+      --surface: #f9fafb;
+      --error: #dc2626;
+      --success: #16a34a;
+      --bg: #f3f4f6;
+      --tag-bg: #eff6ff;
+      --tag-text: #3b82f6;
+      --tag-border: #dbeafe;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      color: var(--ink);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      background: var(--bg);
+      position: relative;
+    }
+    /* 科技感背景网格 */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-image: 
+        linear-gradient(rgba(91, 123, 223, 0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(91, 123, 223, 0.06) 1px, transparent 1px),
+        radial-gradient(circle at 50% 50%, transparent 0%, rgba(91, 123, 223, 0.03) 100%);
+      background-size: 40px 40px, 40px 40px, 100% 100%;
+      pointer-events: none;
+      z-index: 0;
+    }
+    /* 多层渐变光晕 */
+    body::after {
+      content: '';
+      position: fixed;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: 
+        radial-gradient(circle at 20% 30%, rgba(91, 123, 223, 0.08), transparent 50%),
+        radial-gradient(circle at 80% 70%, rgba(91, 123, 223, 0.04), transparent 50%);
+      animation: floatGlow 25s ease-in-out infinite;
+      pointer-events: none;
+      z-index: 0;
+    }
+    @keyframes floatGlow {
+      0%, 100% { transform: translate(0, 0) rotate(0deg); }
+      25% { transform: translate(1%, -1%) rotate(0.5deg); }
+      50% { transform: translate(-1%, 1%) rotate(-0.5deg); }
+      75% { transform: translate(1%, 1%) rotate(0.3deg); }
+    }
+    /* Flowing wave field, rendered beneath chat messages. */
+    .wave-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.86;
+    }
+    .shell {
+      width: min(1420px, calc(100% - 32px));
+      height: 100vh;
+      margin: auto;
+      padding: 8px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: relative;
+      z-index: 1;
+    }
+    /* 角落装饰 */
+    .corner-decoration {
+      position: absolute;
+      width: 60px;
+      height: 60px;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.7;
+    }
+    .corner-decoration::before,
+    .corner-decoration::after {
+      content: '';
+      position: absolute;
+      background: linear-gradient(90deg, var(--accent), transparent);
+    }
+    .corner-decoration::before {
+      width: 30px;
+      height: 2px;
+      opacity: 0.6;
+    }
+    .corner-decoration::after {
+      height: 30px;
+      width: 2px;
+      opacity: 0.6;
+    }
+    /* 左上角 */
+    .corner-tl { top: 0; left: 0; }
+    .corner-tl::before { top: 0; left: 0; }
+    .corner-tl::after { top: 0; left: 0; }
+    /* 右上角 */
+    .corner-tr { top: 0; right: 0; }
+    .corner-tr::before { top: 0; right: 0; background: linear-gradient(-90deg, var(--accent), transparent); }
+    .corner-tr::after { top: 0; right: 0; }
+    /* 左下角 */
+    .corner-bl { bottom: 0; left: 0; }
+    .corner-bl::before { bottom: 0; left: 0; }
+    .corner-bl::after { bottom: 0; left: 0; background: linear-gradient(180deg, var(--accent), transparent); }
+    /* 右下角 */
+    .corner-br { bottom: 0; right: 0; }
+    .corner-br::before { bottom: 0; right: 0; background: linear-gradient(-90deg, var(--accent), transparent); }
+    .corner-br::after { bottom: 0; right: 0; background: linear-gradient(180deg, var(--accent), transparent); }
+    /* 粒子容器 */
+    .particles-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      z-index: 0;
+      overflow: hidden;
+    }
+    .particle {
+      position: absolute;
+      width: var(--size);
+      height: var(--size);
+      border-radius: 50%;
+      background: radial-gradient(circle, var(--accent), transparent);
+      opacity: 0.15;
+      left: var(--x);
+      top: var(--y);
+      animation: particleFloat 6s ease-in-out var(--delay) infinite;
+    }
+    @keyframes particleFloat {
+      0%, 100% {
+        transform: translate(0, 0) scale(1);
+        opacity: 0.15;
+      }
+      50% {
+        transform: translate(10px, -10px) scale(1.2);
+        opacity: 0.3;
+      }
+    }
+    .hero, .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      position: relative;
+      overflow: hidden;
+    }
+    /* 卡片顶部边框光效 */
+    .hero::before, .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      opacity: 0.5;
+      animation: shimmer 4s ease-in-out infinite;
+    }
+    @keyframes shimmer {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.7; }
+    }
+    /* 卡片角落装饰 */
+    .card::after {
+      content: '';
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      width: 8px;
+      height: 8px;
+      border-top: 2px solid var(--accent);
+      border-left: 2px solid var(--accent);
+      opacity: 0.25;
+      pointer-events: none;
+    }
+    .hero {
+      padding: 10px 16px;
+      backdrop-filter: blur(10px);
+      background: rgba(255, 255, 255, 0.95);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-content {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .hero-left {
+      flex: 0 0 auto;
+      text-align: left;
+    }
+    .hero-right {
+      flex: 0 0 auto;
+      text-align: right;
+      max-width: 50%;
+    }
+    /* hero扫描线效果 */
+    .hero::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(91, 123, 223, 0.05), transparent);
+      animation: heroScan 8s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes heroScan {
+      0% { left: -100%; }
+      100% { left: 100%; }
+    }
+    .kicker {
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 10px;
+      letter-spacing: .18em;
+      position: relative;
+      display: inline-block;
+      margin-bottom: 2px;
+    }
+    /* 标题闪烁光标效果 */
+    .kicker::after {
+      content: '';
+      display: inline-block;
+      width: 8px;
+      height: 11px;
+      background: var(--accent);
+      margin-left: 6px;
+      animation: blinkCursor 1.2s infinite;
+      vertical-align: middle;
+    }
+    @keyframes blinkCursor {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+    h1 {
+      margin: 2px 0;
+      font-size: 30px;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--ink) 0%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    p {
+      color: var(--muted);
+      line-height: 1.4;
+      margin: 4px 0;
+      font-size: 13px;
+    }
+    .tags {
+      display: flex;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .tag {
+      padding: 3px 8px;
+      border: 1px solid var(--tag-border);
+      border-radius: 999px;
+      color: var(--tag-text);
+      background: var(--tag-bg);
+      font-size: 11px;
+      font-weight: 600;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .tag::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(91, 123, 223, 0.1), transparent);
+      transition: left 0.5s ease;
+    }
+    .tag:hover::before {
+      left: 100%;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      gap: 14px;
+      flex: 1;
+      min-height: 0;
+    }
+    .card {
+      min-height: 0;
+      padding: 14px;
+      overflow: hidden;
+    }
+    h2 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--ink);
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h2::before {
+      content: '';
+      width: 4px;
+      height: 16px;
+      background: linear-gradient(180deg, var(--accent), transparent);
+      border-radius: 2px;
+    }
+    h2::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, var(--accent), transparent);
+      opacity: 0.3;
+      margin-left: 8px;
+      min-width: 60px;
+    }
+    h3 {
+      margin: 14px 0 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    button {
+      cursor: pointer;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: var(--ink);
+      background: #fff;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    button::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(91, 123, 223, 0.08), transparent);
+      transition: left 0.4s ease;
+    }
+    button:hover:not(:disabled)::before {
+      left: 100%;
+    }
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: var(--tag-bg);
+      box-shadow: 0 0 0 3px rgba(91, 123, 223, 0.1);
+    }
+    button:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+    .quick {
+      width: 100%;
+      min-height: 36px;
+      margin: 4px 0;
+      text-align: left;
+      border-left: 2px solid transparent;
+      transition: all 0.2s ease;
+    }
+    .quick:hover {
+      border-left-color: var(--accent);
+    }
+    .status {
+      display: flex;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 12px;
+      line-height: 1.5;
+      position: relative;
+    }
+    .status::before {
+      content: "";
+      flex: 0 0 8px;
+      width: 8px;
+      height: 8px;
+      margin-top: 4px;
+      border-radius: 50%;
+      background: var(--muted);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
+    .status.success::before { background: var(--success); }
+    .status.error::before { background: var(--error); }
+    .sidebar { overflow: auto; }
+    input[type=file] { width: 100%; font-size: 12px; }
+    details {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+    }
+    summary {
+      cursor: pointer;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 600;
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    .document-list {
+      max-height: 140px;
+      margin: 8px 0;
+      overflow: auto;
+      padding: 4px;
+      border-radius: 6px;
+      background: #fff;
+    }
+    .document-list label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 0;
+      color: var(--ink);
+      font-size: 12px;
+    }
+    .document-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .document-actions button {
+      min-height: 32px;
+      padding: 6px;
+      font-size: 12px;
+    }
+    .danger {
+      width: 100%;
+      min-height: 34px;
+      margin-top: 6px;
+      border-color: #fecaca;
+      color: var(--error);
+      background: #fef2f2;
+      font-weight: 600;
+    }
+    .danger:hover:not(:disabled) {
+      background: #fee2e2;
+      border-color: #fca5a5;
+    }
+    .primary {
+      border-color: var(--accent);
+      color: #fff;
+      background: var(--accent);
+      font-weight: 600;
+    }
+    .primary:hover:not(:disabled) {
+      color: #fff;
+      background: var(--accent-strong);
+    }
+    .full { width: 100%; margin-top: 10px; }
+    .muted { font-size: 12px; color: var(--muted); }
+    .chat-card {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    .chat {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 8px;
+      background: var(--surface);
+      border-radius: 10px;
+      position: relative;
+    }
+    .chat > :not(.wave-canvas) {
+      position: relative;
+      z-index: 1;
+    }
+    /* 聊天区域角落装饰 */
+    .chat::before,
+    .chat::after {
+      content: '';
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      border: 1px solid rgba(91, 123, 223, 0.2);
+      pointer-events: none;
+    }
+    .chat::before {
+      top: 6px;
+      right: 6px;
+      border-left: none;
+      border-bottom: none;
+    }
+    .chat::after {
+      bottom: 6px;
+      left: 6px;
+      border-right: none;
+      border-top: none;
+    }
+    .message {
+      max-width: 82%;
+      margin: 8px 0;
+      padding: 10px 14px;
+      border-radius: 10px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      font-size: 14px;
+      position: relative;
+      animation: messageIn 0.3s ease-out;
+    }
+    @keyframes messageIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .assistant {
+      background: #fff;
+      border: 1px solid var(--line);
+      color: var(--ink);
+    }
+    .user {
+      margin-left: auto;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+      box-shadow: 0 4px 12px rgba(91, 123, 223, 0.25);
+    }
+    .message-title {
+      display: block;
+      margin-bottom: 4px;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--accent);
+    }
+    .sources {
+      max-width: 82%;
+      margin: -2px 0 12px;
+      padding: 8px 12px;
+      border-left: 3px solid var(--accent);
+      color: var(--muted);
+      background: var(--tag-bg);
+      font-size: 12px;
+      line-height: 1.6;
+      border-radius: 0 8px 8px 0;
+    }
+    .sources strong {
+      color: var(--accent);
+    }
+    .composer {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    textarea {
+      flex: 1;
+      min-height: 52px;
+      resize: none;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 14px;
+      color: var(--ink);
+      transition: all 0.2s ease;
+      position: relative;
+      background: var(--card);
+    }
+    textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(91, 123, 223, 0.1), 0 0 20px rgba(91, 123, 223, 0.05);
+    }
+    .empty-docs {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 8px 4px;
+    }
+    @media (max-width: 900px) {
+      body { height: auto; overflow: auto; }
+      .shell {
+        width: min(100% - 18px, 1420px);
+        height: auto;
+        min-height: 100vh;
+        padding: 10px 0 18px;
+      }
+      .hero-content {
+        flex-direction: column;
+        text-align: center;
+      }
+      .hero-left, .hero-right {
+        text-align: center;
+        max-width: 100%;
+      }
+      .tags {
+        justify-content: center;
+      }
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { overflow: visible; }
+      .chat-card { min-height: 65vh; }
+      .message, .sources { max-width: 91%; }
+    }
+
+    /* Deep-water visual theme. */
+    :root {
+      --accent: #76a8ff;
+      --accent-strong: #4d7fe5;
+      --accent-light: rgba(118, 168, 255, 0.16);
+      --ink: #eef5ff;
+      --muted: #a9b8cc;
+      --line: rgba(153, 190, 255, 0.2);
+      --card: rgba(7, 16, 31, 0.78);
+      --surface: rgba(7, 20, 39, 0.68);
+      --bg: #030814;
+      --tag-bg: rgba(77, 127, 229, 0.14);
+      --tag-text: #9ec1ff;
+      --tag-border: rgba(118, 168, 255, 0.24);
+    }
+    body {
+      background:
+        radial-gradient(circle at 78% 18%, rgba(41, 86, 159, 0.18), transparent 30%),
+        radial-gradient(circle at 12% 86%, rgba(29, 77, 143, 0.2), transparent 34%),
+        #030814;
+    }
+    body::before {
+      background-image:
+        radial-gradient(rgba(188, 216, 255, 0.34) 0.6px, transparent 0.9px),
+        radial-gradient(rgba(102, 157, 255, 0.16) 0.55px, transparent 0.9px);
+      background-position: 0 0, 23px 31px;
+      background-size: 47px 47px, 71px 71px;
+      opacity: 0.52;
+    }
+    body::after { opacity: 0.52; }
+    .hero, .card {
+      border-color: rgba(142, 185, 255, 0.18);
+      background: rgba(6, 16, 32, 0.72);
+      box-shadow: 0 18px 52px rgba(0, 0, 0, 0.34), inset 0 1px rgba(184, 214, 255, 0.04);
+      backdrop-filter: blur(18px);
+    }
+    .hero { background: rgba(7, 18, 37, 0.78); }
+    h1 { background: linear-gradient(115deg, #f2f7ff 0%, #85aeff 72%); -webkit-background-clip: text; background-clip: text; }
+    h2, h3, .document-list label, summary { color: var(--ink); }
+    .chat { background: rgba(3, 12, 27, 0.64); }
+    .wave-canvas { opacity: 1; }
+    .assistant { background: rgba(9, 24, 47, 0.78); border-color: rgba(154, 193, 255, 0.18); color: var(--ink); }
+    .user { background: linear-gradient(135deg, #4c7cde, #315cbd); box-shadow: 0 6px 22px rgba(62, 114, 224, 0.27); }
+    .status, details, .document-list { background: rgba(9, 24, 47, 0.72); border-color: var(--line); color: var(--ink); }
+    button { border-color: var(--line); color: var(--ink); background: rgba(9, 24, 47, 0.76); }
+    button:hover:not(:disabled) { background: rgba(77, 127, 229, 0.2); }
+    textarea { background: rgba(4, 15, 30, 0.78); color: var(--ink); border-color: var(--line); }
+    .document-list { background: rgba(3, 12, 27, 0.54); }
+    .danger { background: rgba(127, 29, 29, 0.2); border-color: rgba(252, 165, 165, 0.32); }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <!-- 水波纹背景 -->
+    <!-- 角落装饰 -->
+    <div class="corner-decoration corner-tl"></div>
+    <div class="corner-decoration corner-tr"></div>
+    <div class="corner-decoration corner-bl"></div>
+    <div class="corner-decoration corner-br"></div>
+    <!-- 粒子效果 -->
+    <div class="particles-container">
+      <div class="particle" style="--x: 10%; --y: 20%; --delay: 0s; --size: 4px;"></div>
+      <div class="particle" style="--x: 25%; --y: 60%; --delay: 1.5s; --size: 3px;"></div>
+      <div class="particle" style="--x: 40%; --y: 30%; --delay: 3s; --size: 5px;"></div>
+      <div class="particle" style="--x: 60%; --y: 70%; --delay: 0.8s; --size: 3px;"></div>
+      <div class="particle" style="--x: 75%; --y: 40%; --delay: 2.2s; --size: 4px;"></div>
+      <div class="particle" style="--x: 90%; --y: 80%; --delay: 1s; --size: 3px;"></div>
+      <div class="particle" style="--x: 15%; --y: 85%; --delay: 2.8s; --size: 4px;"></div>
+      <div class="particle" style="--x: 85%; --y: 15%; --delay: 0.5s; --size: 5px;"></div>
+    </div>
+    
+    <section class="hero">
+      <div class="hero-content">
+        <div class="hero-left">
+          <div class="kicker">PERSONAL KNOWLEDGE AGENT</div>
+          <h1>Agentic RAG Assistant</h1>
+        </div>
+        <div class="hero-right">
+          <p>连接本地模型、FAISS 知识库与安全计算工具的个人 AI 助手。</p>
+          <div class="tags">
+            <span class="tag">Tool Calling</span>
+            <span class="tag">FAISS</span>
+            <span class="tag">RAG</span>
+            <span class="tag">Memory</span>
+            <span class="tag">Source Citation</span>
+          </div>
+        </div>
+      </div>
+    </section>
+    <div class="layout">
+      <aside class="card sidebar">
+        <h2>Agent 知识点</h2>
+        <p class="muted">选择主题后可直接发送提问。</p>
+        <button class="quick" data-q="什么是 AI Agent？请说明它与普通聊天机器人的区别，并用一个简单例子解释其工作流程。">什么是 AI Agent？</button>
+        <button class="quick" data-q="请解释 ReAct 框架中推理和行动如何协作，并说明它适合解决什么问题。">ReAct 如何驱动 Agent？</button>
+        <button class="quick" data-q="请解释 RAG 是什么，以及它如何通过检索知识库来降低 AI Agent 回答错误的风险。">RAG 如何提升回答可靠性？</button>
+        <button class="quick" data-q="请说明 AI Agent 中的短期记忆、长期记忆、任务规划和工具调用分别有什么作用。">记忆、规划与工具调用</button>
+        <h3>运行状态</h3>
+        <div id="status" class="status">正在检查本地服务...</div>
+        <button id="clear" class="full">新建对话</button>
+        <details>
+          <summary>知识库管理</summary>
+          <p class="muted">上传 PDF、Markdown 或 TXT 后会立即重建索引。同名文件将覆盖旧版本。</p>
+          <input id="files" type="file" multiple accept=".pdf,.md,.txt">
+          <button id="upload" class="primary full">上传并重建知识库</button>
+          <div id="upload-status" class="status" style="margin-top:8px">尚未选择文件。</div>
+        </details>
+        <details open>
+          <summary>文档管理</summary>
+          <div id="documents" class="document-list" aria-label="知识库文件"></div>
+          <div class="document-actions">
+            <button id="refresh">刷新列表</button>
+            <button id="rebuild">直接重建</button>
+          </div>
+          <button id="delete" class="danger">删除选中文档</button>
+          <div id="document-status" class="status" style="margin-top:8px">正在读取文档列表...</div>
+        </details>
+      </aside>
+      <section class="card chat-card">
+        <div id="chat" class="chat">
+          <canvas id="wave-canvas" class="wave-canvas" aria-hidden="true"></canvas>
+          <div class="message assistant">
+            <span class="message-title">开始一次对话</span>
+            可以询问本地知识库、项目结构，或让 Agent 执行计算。回答使用知识库时会在下方显示真实来源。
+          </div>
+        </div>
+        <div class="composer">
+          <textarea id="input" placeholder="输入问题，Enter 发送；Shift + Enter 换行" aria-label="问题"></textarea>
+          <button id="send" class="primary">发送</button>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const chat = document.querySelector('#chat');
+    const input = document.querySelector('#input');
+    const status = document.querySelector('#status');
+    const files = document.querySelector('#files');
+    let sessionId = `web-${crypto.randomUUID()}`;
+    let sending = false;
+
+    function startWaveField() {
+      const canvas = document.querySelector('#wave-canvas');
+      const context = canvas?.getContext('2d');
+      if (!canvas || !context) return;
+
+      let width = 0;
+      let height = 0;
+      let lastFrame = 0;
+
+      function resize() {
+        const bounds = chat.getBoundingClientRect();
+        const scale = Math.min(window.devicePixelRatio || 1, 2);
+        width = Math.max(1, Math.round(bounds.width));
+        height = Math.max(1, Math.round(bounds.height));
+        canvas.width = Math.round(width * scale);
+        canvas.height = Math.round(height * scale);
+        context.setTransform(scale, 0, 0, scale, 0, 0);
+      }
+
+      function draw(timestamp) {
+        requestAnimationFrame(draw);
+        if (timestamp - lastFrame < 33) return;
+        lastFrame = timestamp;
+        if (width !== Math.round(chat.clientWidth) || height !== Math.round(chat.clientHeight)) resize();
+
+        const phase = timestamp * 0.00024;
+        context.clearRect(0, 0, width, height);
+        context.save();
+        context.beginPath();
+        context.rect(0, 0, width, height);
+        context.clip();
+
+        const lines = 46;
+        for (let index = 0; index < lines; index += 1) {
+          const progress = index / (lines - 1);
+          const baseY = height * (0.52 + progress * 0.36);
+          const largeSway = height * (0.07 + progress * 0.1);
+          const alpha = 0.12 + Math.sin(progress * Math.PI) * 0.25;
+          context.beginPath();
+
+          for (let x = -12; x <= width + 12; x += 9) {
+            const ratio = x / width;
+            const current = baseY - ratio * height * 0.28
+              + Math.sin(ratio * 6.4 + progress * 2.8) * largeSway
+              + Math.sin(ratio * 20 + progress * 5 - phase * 2.4) * (4 + progress * 7);
+            if (x <= -12) context.moveTo(x, current);
+            else context.lineTo(x, current);
+          }
+
+          context.lineWidth = 0.7 + Math.sin(progress * Math.PI) * 0.65;
+          context.strokeStyle = `rgba(136, 184, 255, ${alpha})`;
+          context.stroke();
+        }
+
+        context.restore();
+      }
+
+      resize();
+      new ResizeObserver(resize).observe(chat);
+      chat.addEventListener('scroll', () => {
+        canvas.style.transform = `translateY(${chat.scrollTop}px)`;
+      }, {passive: true});
+      requestAnimationFrame(draw);
+    }
+
+    startWaveField();
+
+    function setStatus(message, kind = '') {
+      status.textContent = message;
+      status.className = `status ${kind}`;
+    }
+
+    function setPanelStatus(id, message, kind = '') {
+      const element = document.querySelector(id);
+      element.textContent = message;
+      element.className = `status ${kind}`;
+    }
+
+    function add(role, content, title = '') {
+      const item = document.createElement('div');
+      item.className = `message ${role}`;
+      if (title) {
+        const heading = document.createElement('span');
+        heading.className = 'message-title';
+        heading.textContent = title;
+        item.append(heading);
+      }
+      item.append(document.createTextNode(content));
+      chat.append(item);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function addSources(sources) {
+      if (!sources?.length) return;
+      const item = document.createElement('div');
+      item.className = 'sources';
+      const title = document.createElement('strong');
+      title.textContent = '参考资料';
+      item.append(title, document.createElement('br'));
+      sources.forEach((source, index) => {
+        item.append(document.createTextNode(`${index + 1}. ${source}`));
+        if (index < sources.length - 1) item.append(document.createElement('br'));
+      });
+      chat.append(item);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function request(url, options = {}) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), options.timeout ?? 135000);
+      try {
+        const response = await fetch(url, {...options, signal: controller.signal});
+        let data;
+        try {
+          data = await response.json();
+        } catch {
+          throw new Error('本地服务返回了无效响应。');
+        }
+        if (!response.ok || !data.ok) throw new Error(data.error || '请求失败。');
+        return data;
+      } catch (error) {
+        if (error.name === 'AbortError') throw new Error('请求超时。请检查模型服务配置或稍后重试。');
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    function setBusy(busy) {
+      sending = busy;
+      document.querySelector('#send').disabled = busy;
+      input.disabled = busy;
+    }
+
+    async function send() {
+      const question = input.value.trim();
+      if (!question || sending) return;
+      add('user', question);
+      input.value = '';
+      setBusy(true);
+      setStatus('Agent 正在处理问题...');
+      try {
+        const data = await request('/api/chat', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({question, session_id: sessionId})
+        });
+        sessionId = data.session_id;
+        add('assistant', data.answer, data.tools?.length ? `已调用：${data.tools.join('、')}` : '回答');
+        addSources(data.sources);
+        setStatus(data.tools?.length ? `本轮已完成工具调用：${data.tools.join('、')}` : '本轮直接回答已完成。', 'success');
+      } catch (error) {
+        add('assistant', `请求未完成：${error.message}`, '执行失败');
+        setStatus(error.message, 'error');
+      } finally {
+        setBusy(false);
+        input.focus();
+      }
+    }
+
+    function renderDocuments(documents) {
+      const container = document.querySelector('#documents');
+      container.replaceChildren();
+      if (!documents.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-docs';
+        empty.textContent = '知识库目录中暂无支持的文档。';
+        container.append(empty);
+        return;
+      }
+      documents.forEach(name => {
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = name;
+        label.append(checkbox, document.createTextNode(name));
+        container.append(label);
+      });
+    }
+
+    async function refreshDocuments() {
+      try {
+        const data = await request('/api/documents');
+        renderDocuments(data.documents);
+        setPanelStatus('#document-status', `当前共有 ${data.documents.length} 个知识文档。`, 'success');
+      } catch (error) {
+        setPanelStatus('#document-status', error.message, 'error');
+      }
+    }
+
+    async function upload() {
+      if (!files.files.length) {
+        setPanelStatus('#upload-status', '请先选择文件。', 'error');
+        return;
+      }
+      const form = new FormData();
+      [...files.files].forEach(file => form.append('files', file));
+      document.querySelector('#upload').disabled = true;
+      setPanelStatus('#upload-status', '正在上传并重建索引...');
+      try {
+        const data = await request('/api/documents/upload', {method: 'POST', body: form});
+        files.value = '';
+        renderDocuments(data.documents);
+        setPanelStatus('#upload-status', data.message, 'success');
+        setPanelStatus('#document-status', `当前共有 ${data.documents.length} 个知识文档。`, 'success');
+      } catch (error) {
+        setPanelStatus('#upload-status', error.message, 'error');
+      } finally {
+        document.querySelector('#upload').disabled = false;
+      }
+    }
+
+    async function rebuild() {
+      document.querySelector('#rebuild').disabled = true;
+      setPanelStatus('#document-status', '正在重建知识库...');
+      try {
+        const data = await request('/api/documents/rebuild', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+        renderDocuments(data.documents);
+        setPanelStatus('#document-status', data.message, 'success');
+      } catch (error) {
+        setPanelStatus('#document-status', error.message, 'error');
+      } finally {
+        document.querySelector('#rebuild').disabled = false;
+      }
+    }
+
+    async function deleteDocuments() {
+      const selected = [...document.querySelectorAll('#documents input:checked')].map(input => input.value);
+      if (!selected.length) {
+        setPanelStatus('#document-status', '请先选择要删除的文档。', 'error');
+        return;
+      }
+      if (!confirm(`删除 ${selected.length} 个文档并重建知识库？`)) return;
+      document.querySelector('#delete').disabled = true;
+      try {
+        const data = await request('/api/documents/delete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({documents: selected})
+        });
+        renderDocuments(data.documents);
+        setPanelStatus('#document-status', data.message, 'success');
+      } catch (error) {
+        setPanelStatus('#document-status', error.message, 'error');
+      } finally {
+        document.querySelector('#delete').disabled = false;
+      }
+    }
+
+    async function clearChat() {
+      try {
+        const data = await request('/api/session/clear', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({session_id: sessionId})
+        });
+        sessionId = data.session_id;
+        chat.replaceChildren();
+        add('assistant', '已创建新对话。', '开始一次对话');
+        setStatus('历史记录已清空。', 'success');
+        input.focus();
+      } catch (error) {
+        setStatus(error.message, 'error');
+      }
+    }
+
+    document.querySelector('#send').addEventListener('click', send);
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        send();
+      }
+    });
+    document.querySelectorAll('.quick').forEach(button => button.addEventListener('click', () => {
+      input.value = button.dataset.q;
+      input.focus();
+    }));
+    document.querySelector('#clear').addEventListener('click', clearChat);
+    document.querySelector('#upload').addEventListener('click', upload);
+    document.querySelector('#refresh').addEventListener('click', refreshDocuments);
+    document.querySelector('#rebuild').addEventListener('click', rebuild);
+    document.querySelector('#delete').addEventListener('click', deleteDocuments);
+
+    (async () => {
+      try {
+        const data = await request('/api/status');
+        renderDocuments(data.documents);
+        setStatus(data.configured && data.index_ready ? '本地服务、配置和 FAISS 索引均已就绪。' : '服务已启动，但配置或索引尚未完成。', data.configured && data.index_ready ? 'success' : 'error');
+        setPanelStatus('#document-status', `当前共有 ${data.documents.length} 个知识文档。`, 'success');
+      } catch (error) {
+        setStatus('无法连接本地服务。请运行 python3 web_server.py，并访问终端显示的本地地址。', 'error');
+        setPanelStatus('#document-status', '文档列表不可用。', 'error');
+      }
+    })();
+  </script>
+</body>
+</html>

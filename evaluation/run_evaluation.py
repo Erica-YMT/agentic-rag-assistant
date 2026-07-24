@@ -1,11 +1,9 @@
 import json
-import sys
-import time
-
-from collections import Counter
-from datetime import datetime
-from pathlib import Path
-
+import sys # 操控pyhton运行环境
+import time # 处理时间，延迟
+from collections import Counter # 快速统计
+from datetime import datetime # 处理带年月日时分秒的标准时间
+from pathlib import Path # 文件路径工具
 
 # ==========================
 # 将项目根目录加入导入路径
