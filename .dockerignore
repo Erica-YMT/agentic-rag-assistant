@@ -1,0 +1,24 @@
+.git/
+.venv/
+venv/
+
+__pycache__/
+*.py[cod]
+*.log
+
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# 真实配置文件，不复制进镜像
+config.toml
+config.docker.toml
+
+# 运行时通过 volumes 挂载
+data/
+faiss_index/
+
+# 临时结果和备份
+evaluation/results/evaluation_*.json
+reports/
+backups/

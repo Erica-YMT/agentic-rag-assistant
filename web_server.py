@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from api_client import api_client
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 PAGE_PATH = PROJECT_ROOT / "web.html"
@@ -89,61 +91,70 @@ class Runtime:
         self.agent_class = Agent
         self.tools_module = tools_module
 
-    def chat(self, session_id: str, question: str) -> dict[str, Any]:
-        with self.lock:
-            self._load_agent()
-            assert self.agent_class is not None
-            agent = self.agents.setdefault(session_id, self.agent_class())
-            session_lock = self.session_locks.setdefault(session_id, threading.RLock())
+    def chat(
+        self,
+        session_id: str,
+        question: str,
+    ) -> dict[str, Any]:
+        """
+        通过 api_client.py 调用 FastAPI 的 POST /chat。
+        """
 
-        # A slow upstream model request affects only its own conversation.
-        with session_lock:
-            answer = str(agent.run(session_id=session_id, question=question) or "未获得有效回答。")
-            called_tools = agent.get_called_tools()
-            sources = extract_sources(agent.get_call_records())
+        result = api_client.chat(
+            question=question,
+            session_id=session_id,
+        )
+
+        call_records = result.get(
+            "tool_calls",
+            [],
+        ) or []
 
         return {
-            "answer": answer,
-            "session_id": session_id,
-            "tools": called_tools,
-            "sources": sources,
+            "answer": str(
+                result.get("answer")
+                or "未获得有效回答。"
+            ),
+            "session_id": str(
+                result.get("session_id")
+                or session_id
+            ),
+            # 保持 web.html 原来使用的字段名 tools
+            "tools": list(
+                result.get("called_tools")
+                or []
+            ),
+            "sources": extract_sources(
+                call_records
+            ),
+            "elapsed_seconds": float(
+                result.get("elapsed_seconds")
+                or 0.0
+            ),
         }
 
-    def clear_session(self, session_id: str) -> str:
-        with self.lock:
-            agent = self.agents.pop(session_id, None)
-            self.session_locks.pop(session_id, None)
-            if agent is not None:
-                sessions = getattr(getattr(agent, "memory", None), "sessions", None)
-                if isinstance(sessions, dict):
-                    sessions.pop(session_id, None)
+    def clear_session(
+        self,
+        session_id: str,
+    ) -> str:
+        """
+        删除 FastAPI 中保存的会话，
+        然后生成一个新的网页会话 ID。
+        """
+
+        if session_id:
+            api_client.delete_session(
+                session_id
+            )
+
         return f"web-{uuid.uuid4().hex}"
 
-    def rebuild_index(self) -> None:
-        """Build the index and replace the in-process RAG store, if loaded."""
+    def rebuild_index(self) -> dict[str, Any]:
+        """
+        通过 FastAPI 重建并重新加载知识库。
+        """
+        return api_client.rebuild_knowledge()
 
-        from build_index import build_index
-
-        with BUILD_LOCK, self.lock:
-            build_index()
-            if self.tools_module is None:
-                return
-
-            from knowledge_base import KnowledgeBase
-
-            with CONFIG_PATH.open("rb") as file:
-                config = tomllib.load(file)
-            embedding = config.get("embedding", {})
-            model_path_value = embedding.get("model_path")
-            if not model_path_value:
-                raise ValueError("config.toml 中缺少 [embedding].model_path")
-            model_path = resolve_project_path(str(model_path_value))
-            index_path = resolve_project_path(embedding.get("index_path", "faiss_index"))
-            self.tools_module.kb = KnowledgeBase(
-                model_dir=str(model_path),
-                index_path=str(index_path),
-                score_threshold=float(embedding.get("score_threshold", 1.0)),
-            )
 
 
 def resolve_project_path(path_value: str) -> Path:
@@ -276,8 +287,23 @@ class ApiHandler(BaseHTTPRequestHandler):
     def handle_rebuild(self) -> None:
         if self.read_body(1024) is None:
             return
-        RUNTIME.rebuild_index()
-        self.send_json({"ok": True, "message": "知识库已重建并在当前服务中生效。", "documents": list_documents()})
+
+        result = RUNTIME.rebuild_index()
+
+        self.send_json(
+            {
+                "ok": True,
+                "message": result.get(
+                    "message",
+                    "知识库已重建并重新加载。",
+                ),
+                "elapsed_seconds": result.get(
+                    "elapsed_seconds",
+                    0.0,
+                ),
+                "documents": list_documents(),
+            }
+        )
 
     def handle_delete(self) -> None:
         payload = self.read_json()
@@ -344,7 +370,7 @@ class ApiHandler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Agentic RAG web interface.")
     parser.add_argument("--host", default="0.0.0.0", help="Local bind address.")
-    parser.add_argument("--port", type=int, default=8000, help="Preferred local port.")
+    parser.add_argument("--port", type=int, default=8001, help="Preferred local port.")
     args = parser.parse_args()
 
     server = None

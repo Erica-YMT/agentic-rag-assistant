@@ -1042,7 +1042,20 @@
           body: JSON.stringify({session_id: sessionId})
         });
         sessionId = data.session_id;
-        chat.replaceChildren();
+        // 只删除聊天消息，保留动态水波 Canvas。
+        const waveCanvas = chat.querySelector('#wave-canvas');
+
+        for (const child of [...chat.children]) {
+          if (child !== waveCanvas) {
+            child.remove();
+          }
+        }
+
+        if (waveCanvas) {
+          waveCanvas.style.transform = '';
+        }
+
+        chat.scrollTop = 0;
         add('assistant', '已创建新对话。', '开始一次对话');
         setStatus('历史记录已清空。', 'success');
         input.focus();
@@ -1080,5 +1093,1148 @@
       }
     })();
   </script>
+
+<!-- CHAT_HISTORY_DRAWER -->
+<style>
+    #historyOpenButton {
+        position: fixed;
+        left: 18px;
+        bottom: 20px;
+        z-index: 9000;
+        min-width: 112px;
+        padding: 11px 16px;
+        border: 0;
+        border-radius: 999px;
+        background: #1f2937;
+        color: #ffffff;
+        font-size: 14px;
+        cursor: pointer;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    }
+
+    #historyDrawerMask {
+        position: fixed;
+        inset: 0;
+        z-index: 9100;
+        display: none;
+        background: rgba(15, 23, 42, 0.28);
+    }
+
+    #historyDrawerMask.history-visible {
+        display: block;
+    }
+
+    #historyDrawer {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: min(430px, 92vw);
+        display: flex;
+        flex-direction: column;
+        background: #f8fafc;
+        box-shadow: 10px 0 32px rgba(0, 0, 0, 0.18);
+    }
+
+    .history-header {
+        padding: 18px;
+        background: #ffffff;
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .history-header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    .history-header h2 {
+        margin: 0;
+        font-size: 19px;
+        color: #111827;
+    }
+
+    .history-close {
+        width: 34px;
+        height: 34px;
+        border: 0;
+        border-radius: 8px;
+        background: #f3f4f6;
+        color: #374151;
+        font-size: 20px;
+        cursor: pointer;
+    }
+
+    .history-search-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+    }
+
+    #historyKeyword {
+        min-width: 0;
+        flex: 1;
+        height: 40px;
+        padding: 0 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 9px;
+        background: #ffffff;
+        font-size: 14px;
+    }
+
+    .history-button {
+        min-height: 38px;
+        padding: 0 13px;
+        border: 0;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #ffffff;
+        cursor: pointer;
+    }
+
+    .history-button-secondary {
+        background: #e5e7eb;
+        color: #1f2937;
+    }
+
+    .history-button-danger {
+        background: #dc2626;
+    }
+
+    #historyStatus {
+        min-height: 20px;
+        margin-top: 9px;
+        color: #6b7280;
+        font-size: 12px;
+    }
+
+    #historyBody {
+        min-height: 0;
+        flex: 1;
+        display: grid;
+        grid-template-rows: minmax(180px, 40%) 1fr;
+    }
+
+    #historySessionList {
+        overflow-y: auto;
+        padding: 12px;
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .history-session {
+        width: 100%;
+        margin-bottom: 8px;
+        padding: 11px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #ffffff;
+        text-align: left;
+        cursor: pointer;
+    }
+
+    .history-session:hover,
+    .history-session.history-active {
+        border-color: #93c5fd;
+        background: #eff6ff;
+    }
+
+    .history-session-title {
+        overflow: hidden;
+        color: #111827;
+        font-size: 14px;
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .history-session-meta {
+        margin-top: 5px;
+        color: #6b7280;
+        font-size: 12px;
+    }
+
+    #historyDetails {
+        overflow-y: auto;
+        padding: 14px;
+    }
+
+    .history-detail-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+
+    .history-message {
+        margin-bottom: 10px;
+        padding: 11px 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #ffffff;
+    }
+
+    .history-message-user {
+        border-left: 4px solid #2563eb;
+    }
+
+    .history-message-assistant {
+        border-left: 4px solid #16a34a;
+    }
+
+    .history-message-tool {
+        border-left: 4px solid #d97706;
+    }
+
+    .history-message-role {
+        margin-bottom: 6px;
+        color: #6b7280;
+        font-size: 12px;
+    }
+
+    .history-message-content {
+        color: #1f2937;
+        font-size: 14px;
+        line-height: 1.65;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .history-empty {
+        padding: 30px 12px;
+        color: #9ca3af;
+        text-align: center;
+    }
+
+    #historyActiveBadge {
+        display: none;
+        position: fixed;
+        left: 18px;
+        bottom: 70px;
+        z-index: 8999;
+        max-width: 260px;
+        padding: 7px 11px;
+        overflow: hidden;
+        border-radius: 8px;
+        background: #dbeafe;
+        color: #1e40af;
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+</style>
+
+<button
+    id="historyOpenButton"
+    type="button"
+>
+    历史记录
+</button>
+
+<div id="historyActiveBadge"></div>
+
+<div id="historyDrawerMask">
+    <section
+        id="historyDrawer"
+        aria-label="历史聊天记录"
+    >
+        <header class="history-header">
+            <div class="history-header-row">
+                <h2>历史聊天记录</h2>
+
+                <button
+                    id="historyCloseButton"
+                    class="history-close"
+                    type="button"
+                    aria-label="关闭"
+                >
+                    ×
+                </button>
+            </div>
+
+            <div class="history-search-row">
+                <input
+                    id="historyKeyword"
+                    placeholder="搜索问题或回答"
+                >
+
+                <button
+                    id="historySearchButton"
+                    class="history-button"
+                    type="button"
+                >
+                    搜索
+                </button>
+
+                <button
+                    id="historyRefreshButton"
+                    class="history-button history-button-secondary"
+                    type="button"
+                >
+                    刷新
+                </button>
+            </div>
+
+            <div id="historyStatus"></div>
+        </header>
+
+        <div id="historyBody">
+            <div id="historySessionList">
+                <div class="history-empty">
+                    正在加载历史记录……
+                </div>
+            </div>
+
+            <div id="historyDetails">
+                <div class="history-empty">
+                    选择一个会话查看聊天内容。
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<script>
+(() => {
+    "use strict";
+
+    const apiBase =
+        `${window.location.protocol}//${window.location.hostname}:8000`;
+
+    const sessionStorageKey =
+        "agentic-rag-active-session-id";
+
+    const nativeFetch =
+        window.fetch.bind(window);
+
+    let selectedSessionId = "";
+    let selectedSessionTitle = "";
+
+    const openButton =
+        document.getElementById("historyOpenButton");
+
+    const closeButton =
+        document.getElementById("historyCloseButton");
+
+    const mask =
+        document.getElementById("historyDrawerMask");
+
+    const sessionList =
+        document.getElementById("historySessionList");
+
+    const details =
+        document.getElementById("historyDetails");
+
+    const keywordInput =
+        document.getElementById("historyKeyword");
+
+    const searchButton =
+        document.getElementById("historySearchButton");
+
+    const refreshButton =
+        document.getElementById("historyRefreshButton");
+
+    const status =
+        document.getElementById("historyStatus");
+
+    const activeBadge =
+        document.getElementById("historyActiveBadge");
+
+
+    function getActiveSessionId() {
+        return localStorage.getItem(sessionStorageKey) || "";
+    }
+
+
+    function setActiveSessionId(sessionId, title = "") {
+        const value = String(sessionId || "").trim();
+
+        if (value) {
+            localStorage.setItem(sessionStorageKey, value);
+        } else {
+            localStorage.removeItem(sessionStorageKey);
+        }
+
+        updateActiveBadge(title);
+    }
+
+
+    function updateActiveBadge(title = "") {
+        const sessionId = getActiveSessionId();
+
+        if (!sessionId) {
+            activeBadge.style.display = "none";
+            activeBadge.textContent = "";
+            return;
+        }
+
+        activeBadge.style.display = "block";
+        activeBadge.textContent =
+            `当前会话：${title || sessionId}`;
+    }
+
+
+    function setStatus(message) {
+        status.textContent = String(message || "");
+    }
+
+
+    function formatTime(value) {
+        if (!value) {
+            return "";
+        }
+
+        const date = new Date(value);
+
+        if (Number.isNaN(date.getTime())) {
+            return String(value);
+        }
+
+        return date.toLocaleString();
+    }
+
+
+    async function requestJson(path, options = {}) {
+        const response = await nativeFetch(
+            `${apiBase}${path}`,
+            options,
+        );
+
+        let data = {};
+
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error(
+                `接口返回了非 JSON 数据，状态码 ${response.status}`
+            );
+        }
+
+        if (!response.ok) {
+            throw new Error(
+                data.detail ||
+                data.error ||
+                `请求失败，状态码 ${response.status}`
+            );
+        }
+
+        return data;
+    }
+
+
+    function createEmpty(message) {
+        const element = document.createElement("div");
+        element.className = "history-empty";
+        element.textContent = message;
+        return element;
+    }
+
+
+    function markSelectedSession() {
+        document
+            .querySelectorAll(".history-session")
+            .forEach((element) => {
+                element.classList.toggle(
+                    "history-active",
+                    element.dataset.sessionId === selectedSessionId,
+                );
+            });
+    }
+
+
+    async function loadSessions() {
+        selectedSessionId = "";
+        selectedSessionTitle = "";
+
+        sessionList.replaceChildren(
+            createEmpty("正在加载历史记录……")
+        );
+
+        setStatus("");
+
+        try {
+            const data = await requestJson(
+                "/history/sessions?limit=200"
+            );
+
+            const items = Array.isArray(data.items)
+                ? data.items
+                : [];
+
+            renderSessions(items);
+
+            setStatus(`共 ${items.length} 个历史会话`);
+        } catch (error) {
+            sessionList.replaceChildren(
+                createEmpty(`加载失败：${error.message}`)
+            );
+        }
+    }
+
+
+    function renderSessions(items, snippets = new Map()) {
+        sessionList.replaceChildren();
+
+        if (!items.length) {
+            sessionList.append(
+                createEmpty("没有找到聊天记录。")
+            );
+            return;
+        }
+
+        for (const item of items) {
+            const button = document.createElement("button");
+
+            button.type = "button";
+            button.className = "history-session";
+            button.dataset.sessionId = item.session_id;
+
+            const title = document.createElement("div");
+            title.className = "history-session-title";
+            title.textContent =
+                item.title ||
+                snippets.get(item.session_id) ||
+                item.session_id;
+
+            const meta = document.createElement("div");
+            meta.className = "history-session-meta";
+
+            const messageCount =
+                item.message_count !== undefined
+                    ? `${item.message_count} 条消息 · `
+                    : "";
+
+            meta.textContent =
+                `${messageCount}${formatTime(
+                    item.updated_at || item.created_at
+                )}`;
+
+            button.append(title, meta);
+
+            button.addEventListener("click", () => {
+                selectedSessionTitle = title.textContent;
+                loadSession(item.session_id);
+            });
+
+            sessionList.append(button);
+        }
+
+        markSelectedSession();
+    }
+
+
+    async function searchHistory() {
+        const keyword = keywordInput.value.trim();
+
+        if (!keyword) {
+            await loadSessions();
+            return;
+        }
+
+        sessionList.replaceChildren(
+            createEmpty("正在搜索……")
+        );
+
+        setStatus("");
+
+        try {
+            const params = new URLSearchParams({
+                keyword,
+                limit: "200",
+            });
+
+            const data = await requestJson(
+                `/history/search?${params.toString()}`
+            );
+
+            const messages = Array.isArray(data.items)
+                ? data.items
+                : [];
+
+            const sessionMap = new Map();
+            const snippets = new Map();
+
+            for (const message of messages) {
+                if (!sessionMap.has(message.session_id)) {
+                    sessionMap.set(
+                        message.session_id,
+                        {
+                            session_id: message.session_id,
+                            title:
+                                message.title ||
+                                message.content.slice(0, 40),
+                            updated_at: message.created_at,
+                        },
+                    );
+
+                    snippets.set(
+                        message.session_id,
+                        message.content.slice(0, 50),
+                    );
+                }
+            }
+
+            const sessions = [...sessionMap.values()];
+
+            renderSessions(sessions, snippets);
+
+            setStatus(
+                `找到 ${messages.length} 条消息，属于 ${sessions.length} 个会话`
+            );
+        } catch (error) {
+            sessionList.replaceChildren(
+                createEmpty(`搜索失败：${error.message}`)
+            );
+        }
+    }
+
+
+    async function loadSession(sessionId) {
+        selectedSessionId = sessionId;
+
+        markSelectedSession();
+
+        details.replaceChildren(
+            createEmpty("正在加载会话内容……")
+        );
+
+        try {
+            const data = await requestJson(
+                `/history/session/${encodeURIComponent(sessionId)}`
+            );
+
+            const messages = Array.isArray(data.items)
+                ? data.items
+                : [];
+
+            renderMessages(messages);
+        } catch (error) {
+            details.replaceChildren(
+                createEmpty(`加载失败：${error.message}`)
+            );
+        }
+    }
+
+
+    function renderMessages(messages) {
+        details.replaceChildren();
+
+        const actions = document.createElement("div");
+        actions.className = "history-detail-actions";
+
+        const restoreButton = document.createElement("button");
+        restoreButton.type = "button";
+        restoreButton.className = "history-button";
+        restoreButton.textContent = "恢复此会话";
+
+        restoreButton.addEventListener("click", () => {
+            setActiveSessionId(
+                selectedSessionId,
+                selectedSessionTitle,
+            );
+
+            setStatus(
+                "会话已恢复，关闭历史记录后可以继续提问。"
+            );
+
+            mask.classList.remove("history-visible");
+        });
+
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className =
+            "history-button history-button-danger";
+        deleteButton.textContent = "删除会话";
+
+        deleteButton.addEventListener("click", async () => {
+            const confirmed = window.confirm(
+                "确定删除这个会话及其全部消息吗？"
+            );
+
+            if (!confirmed) {
+                return;
+            }
+
+            try {
+                await requestJson(
+                    `/history/session/${
+                        encodeURIComponent(selectedSessionId)
+                    }`,
+                    {
+                        method: "DELETE",
+                    },
+                );
+
+                if (
+                    getActiveSessionId() === selectedSessionId
+                ) {
+                    setActiveSessionId("");
+                }
+
+                details.replaceChildren(
+                    createEmpty("会话已删除。")
+                );
+
+                await loadSessions();
+            } catch (error) {
+                setStatus(`删除失败：${error.message}`);
+            }
+        });
+
+        actions.append(restoreButton, deleteButton);
+        details.append(actions);
+
+        if (!messages.length) {
+            details.append(
+                createEmpty("这个会话没有消息。")
+            );
+            return;
+        }
+
+        const roleNames = {
+            user: "用户",
+            assistant: "助手",
+            system: "系统",
+            tool: "工具",
+        };
+
+        for (const message of messages) {
+            const box = document.createElement("article");
+
+            box.className =
+                `history-message history-message-${
+                    message.role || "unknown"
+                }`;
+
+            const role = document.createElement("div");
+            role.className = "history-message-role";
+            role.textContent =
+                `${roleNames[message.role] || message.role} · ${
+                    formatTime(message.created_at)
+                }`;
+
+            const content = document.createElement("div");
+            content.className = "history-message-content";
+            content.textContent = message.content || "";
+
+            box.append(role, content);
+            details.append(box);
+        }
+    }
+
+
+    /*
+     * 拦截网页原来的聊天请求。
+     *
+     * 恢复历史会话后，继续调用现有 /api/chat，
+     * 只是把 session_id 替换为已恢复会话的 ID。
+     */
+    window.fetch = async function patchedFetch(
+        input,
+        init = {},
+    ) {
+        let nextInit = init;
+
+        const requestUrl =
+            typeof input === "string"
+                ? input
+                : String(input.url || "");
+
+        const isChatRequest =
+            requestUrl.includes("/api/chat") ||
+            requestUrl.endsWith("/chat");
+
+        const isClearRequest =
+            requestUrl.includes("/api/session/clear") ||
+            requestUrl.includes("/sessions/");
+
+        if (
+            isChatRequest &&
+            typeof init.body === "string"
+        ) {
+            try {
+                const payload = JSON.parse(init.body);
+                const activeSessionId =
+                    getActiveSessionId();
+
+                if (activeSessionId) {
+                    payload.session_id =
+                        activeSessionId;
+                }
+
+                nextInit = {
+                    ...init,
+                    body: JSON.stringify(payload),
+                };
+            } catch {
+                // 保持网页原来的请求，不中断聊天。
+            }
+        }
+
+        const response = await nativeFetch(
+            input,
+            nextInit,
+        );
+
+        if (isChatRequest || isClearRequest) {
+            response
+                .clone()
+                .json()
+                .then((data) => {
+                    if (data && data.session_id) {
+                        setActiveSessionId(
+                            data.session_id
+                        );
+                    }
+
+                    if (isChatRequest) {
+                        window.setTimeout(
+                            loadSessions,
+                            600,
+                        );
+                    }
+                })
+                .catch(() => {});
+        }
+
+        return response;
+    };
+
+
+    openButton.addEventListener("click", () => {
+        mask.classList.add("history-visible");
+        loadSessions();
+    });
+
+    closeButton.addEventListener("click", () => {
+        mask.classList.remove("history-visible");
+    });
+
+    mask.addEventListener("click", (event) => {
+        if (event.target === mask) {
+            mask.classList.remove("history-visible");
+        }
+    });
+
+    searchButton.addEventListener(
+        "click",
+        searchHistory,
+    );
+
+    refreshButton.addEventListener(
+        "click",
+        loadSessions,
+    );
+
+    keywordInput.addEventListener(
+        "keydown",
+        (event) => {
+            if (event.key === "Enter") {
+                searchHistory();
+            }
+        },
+    );
+
+    updateActiveBadge();
+})();
+</script>
+
+
+<!-- HISTORY_THEME_OVERRIDE_START -->
+<style id="historyThemeOverride">
+    /*
+     * 历史记录抽屉浅色主题
+     * 使用柔和蓝灰色，降低边界、阴影和遮罩的割裂感。
+     */
+
+    #historyOpenButton {
+        min-width: 108px !important;
+        padding: 10px 16px !important;
+        border: 1px solid #dbe7f5 !important;
+        border-radius: 12px !important;
+        background: #f0f6ff !important;
+        color: #49698f !important;
+        box-shadow:
+            0 4px 14px rgba(78, 105, 140, 0.10) !important;
+        transition:
+            background 0.2s ease,
+            border-color 0.2s ease,
+            transform 0.2s ease !important;
+    }
+
+    #historyOpenButton:hover {
+        border-color: #c8d9ee !important;
+        background: #e8f1fc !important;
+        transform: translateY(-1px);
+    }
+
+    #historyDrawerMask {
+        background: rgba(71, 85, 105, 0.12) !important;
+        backdrop-filter: blur(2px);
+    }
+
+    #historyDrawer {
+        border-right: 1px solid #e4ebf4 !important;
+        border-radius: 0 18px 18px 0 !important;
+        background: #f7f9fc !important;
+        box-shadow:
+            12px 0 30px rgba(70, 89, 112, 0.10) !important;
+        overflow: hidden;
+    }
+
+    .history-header {
+        border-bottom: 1px solid #e5ebf3 !important;
+        background: #fbfcfe !important;
+    }
+
+    .history-header h2 {
+        color: #334155 !important;
+        font-weight: 600 !important;
+    }
+
+    .history-close {
+        border: 1px solid #e1e8f0 !important;
+        background: #f4f7fa !important;
+        color: #718096 !important;
+        transition:
+            background 0.2s ease,
+            color 0.2s ease !important;
+    }
+
+    .history-close:hover {
+        background: #eaf0f6 !important;
+        color: #475569 !important;
+    }
+
+    #historyKeyword {
+        border: 1px solid #dce5ef !important;
+        background: #ffffff !important;
+        color: #334155 !important;
+        box-shadow: none !important;
+    }
+
+    #historyKeyword::placeholder {
+        color: #a0aec0 !important;
+    }
+
+    #historyKeyword:focus {
+        border-color: #b8cee8 !important;
+        outline: 3px solid rgba(184, 206, 232, 0.22) !important;
+    }
+
+    .history-button {
+        border: 1px solid #cdddef !important;
+        background: #eaf2fb !important;
+        color: #456789 !important;
+        box-shadow: none !important;
+        transition:
+            background 0.2s ease,
+            border-color 0.2s ease !important;
+    }
+
+    .history-button:hover {
+        border-color: #b8cde5 !important;
+        background: #ddeaf8 !important;
+    }
+
+    .history-button-secondary {
+        border-color: #e0e6ed !important;
+        background: #f2f5f8 !important;
+        color: #64748b !important;
+    }
+
+    .history-button-secondary:hover {
+        background: #e9eef3 !important;
+    }
+
+    .history-button-danger {
+        border-color: #f1d4d4 !important;
+        background: #fff1f1 !important;
+        color: #b45b5b !important;
+    }
+
+    .history-button-danger:hover {
+        border-color: #e9c1c1 !important;
+        background: #fde7e7 !important;
+    }
+
+    #historyStatus {
+        color: #8a99ab !important;
+    }
+
+    #historyBody {
+        background: #f7f9fc !important;
+    }
+
+    #historySessionList {
+        border-bottom: 1px solid #e5ebf2 !important;
+        background: #f7f9fc !important;
+    }
+
+    #historyDetails {
+        background: #f9fbfd !important;
+    }
+
+    .history-session {
+        border: 1px solid #e2e9f1 !important;
+        border-radius: 12px !important;
+        background: #ffffff !important;
+        box-shadow:
+            0 2px 8px rgba(82, 101, 123, 0.035) !important;
+        transition:
+            background 0.2s ease,
+            border-color 0.2s ease,
+            transform 0.2s ease !important;
+    }
+
+    .history-session:hover {
+        border-color: #cddced !important;
+        background: #f6f9fd !important;
+        transform: translateY(-1px);
+    }
+
+    .history-session.history-active {
+        border-color: #bfd3ea !important;
+        background: #edf5fd !important;
+        box-shadow:
+            inset 3px 0 0 #9dbbda !important;
+    }
+
+    .history-session-title {
+        color: #40536a !important;
+        font-weight: 600 !important;
+    }
+
+    .history-session-meta {
+        color: #93a1b2 !important;
+    }
+
+    .history-message {
+        border: 1px solid #e3eaf2 !important;
+        border-radius: 12px !important;
+        background: #ffffff !important;
+        box-shadow:
+            0 2px 8px rgba(80, 96, 115, 0.035) !important;
+    }
+
+    .history-message-user {
+        border-left: 3px solid #9ebddd !important;
+        background: #f8fbff !important;
+    }
+
+    .history-message-assistant {
+        border-left: 3px solid #a9cbbb !important;
+        background: #f9fcfa !important;
+    }
+
+    .history-message-tool {
+        border-left: 3px solid #dbc69e !important;
+        background: #fdfbf7 !important;
+    }
+
+    .history-message-role {
+        color: #94a3b8 !important;
+    }
+
+    .history-message-content {
+        color: #475569 !important;
+    }
+
+    .history-empty {
+        color: #9caabd !important;
+    }
+
+    #historyActiveBadge {
+        border: 1px solid #d6e3f1 !important;
+        background: #eef5fc !important;
+        color: #567391 !important;
+        box-shadow:
+            0 3px 10px rgba(78, 103, 132, 0.07) !important;
+    }
+
+    @media (max-width: 600px) {
+        #historyDrawer {
+            width: 94vw !important;
+            border-radius: 0 14px 14px 0 !important;
+        }
+
+        .history-search-row {
+            flex-wrap: wrap;
+        }
+
+        #historyKeyword {
+            flex-basis: 100%;
+        }
+    }
+</style>
+<!-- HISTORY_THEME_OVERRIDE_END -->
+
+
+<!-- HISTORY_FLOAT_FIX_START -->
+<style id="historyFloatFix">
+    /*
+     * 历史记录悬浮入口减弱处理：
+     * 1. 隐藏当前会话 badge，避免挡字
+     * 2. 缩小历史记录按钮，弱化存在感
+     */
+
+    #historyActiveBadge {
+        display: none !important;
+    }
+
+    #historyOpenButton {
+        left: 16px !important;
+        bottom: 16px !important;
+        z-index: 8990 !important;
+
+        min-width: 82px !important;
+        height: 36px !important;
+        padding: 0 14px !important;
+
+        border: 1px solid #d9e6f3 !important;
+        border-radius: 10px !important;
+
+        background: rgba(240, 246, 255, 0.92) !important;
+        color: #5b7691 !important;
+
+        font-size: 13px !important;
+        font-weight: 500 !important;
+
+        box-shadow:
+            0 4px 12px rgba(77, 101, 131, 0.08) !important;
+
+        backdrop-filter: blur(6px);
+        transition:
+            background 0.2s ease,
+            border-color 0.2s ease,
+            transform 0.2s ease,
+            box-shadow 0.2s ease !important;
+    }
+
+    #historyOpenButton:hover {
+        background: rgba(232, 241, 252, 0.96) !important;
+        border-color: #c9d9ea !important;
+        transform: translateY(-1px);
+        box-shadow:
+            0 6px 14px rgba(77, 101, 131, 0.10) !important;
+    }
+
+    #historyOpenButton:active {
+        transform: translateY(0);
+    }
+
+    @media (max-width: 768px) {
+        #historyOpenButton {
+            left: 12px !important;
+            bottom: 12px !important;
+            min-width: 76px !important;
+            height: 34px !important;
+            padding: 0 12px !important;
+            font-size: 12px !important;
+        }
+    }
+</style>
+<!-- HISTORY_FLOAT_FIX_END -->
+
 </body>
 </html>

@@ -107,52 +107,74 @@ class Agent:
 
     def _create_completion(
         self,
-        messages,
-        max_attempts=2,
-        retry_delay=1
+        messages
     ):
         """
-        调用大模型。
-        超时、连接错误、限流或服务器错误时，
-        只重试当前这一次模型请求。
+        调用模型接口。
+
+        对连接失败、超时、限流和临时服务异常，
+        最多尝试 3 次。
         """
+        max_attempts = 3
         last_error = None
 
-        for attempt in range(
-            1,
-            max_attempts + 1
-        ):
+        for attempt in range(max_attempts):
             try:
-                return (
-                    self.client
-                    .chat
-                    .completions
-                    .create(
-                        model=model_name,
-                        messages=messages,
-                        tools=tools
-                    )
+                return client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    tools=tools,
                 )
+
+            except InternalServerError as error:
+                error_text = str(error)
+
+                # 这条第三方接口提示已经确认可能偶发，
+                # 因此仍然允许重试。
+                known_transient_error = (
+                    "参数错误超过100个"
+                    in error_text
+                )
+
+                # 其他明确的参数错误，继续重试通常没有意义。
+                if (
+                    "参数错误" in error_text
+                    and not known_transient_error
+                ):
+                    raise
+
+                last_error = error
+
             except (
-                APITimeoutError,
                 APIConnectionError,
+                APITimeoutError,
                 RateLimitError,
-                InternalServerError
-            ) as exc:
-                last_error = exc
-                if attempt < max_attempts:
-                    print(
-                    f"\n模型接口暂时无响应，"
-                    f"{retry_delay} 秒后重试..."
-                )
-                time.sleep(retry_delay)
-                if last_error is not None:
-                    raise last_error
+            ) as error:
+                last_error = error
+
+            # 已经是最后一次尝试，不再等待。
+            if attempt == max_attempts - 1:
+                break
+
+            # 第一次失败等待 1 秒，
+            # 第二次失败等待 2 秒。
+            wait_seconds = 2 ** attempt
+
+            print(
+                f"模型服务暂时异常，"
+                f"{wait_seconds} 秒后进行第 "
+                f"{attempt + 2} 次尝试..."
+            )
+
+            time.sleep(wait_seconds)
+
+        if last_error is not None:
+            raise last_error
+
         raise RuntimeError(
-            "模型请求失败，但没有获得错误信息。"
+            "模型请求失败，但没有捕获到具体异常"
         )
 
-    #主程序
     def run(
         self,
         session_id,

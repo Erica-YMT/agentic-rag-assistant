@@ -8,6 +8,7 @@ venv/
 
 # 本地私密配置
 config.toml
+config.docker.toml
 auth.json
 
 # 本地模型文件
@@ -32,3 +33,20 @@ note.md
 # Local development notes
 note.md
 faiss_index/
+
+# Local chat history
+data/chat_history.db
+data/chat_history.db-shm
+data/chat_history.db-wal
+
+# Local long-term user memory
+data/user_memory.db
+data/user_memory.db-shm
+data/user_memory.db-wal
+backups/
+docker-build.log
+*.db-shm
+*.db-wal
+*.bak
+*.backup
+*~

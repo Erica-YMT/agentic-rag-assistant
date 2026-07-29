@@ -1,0 +1,74 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: agentic-rag-api
+
+    command:
+      - python
+      - -m
+      - uvicorn
+      - api:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      # Docker 真实配置，只读
+      - ./config.docker.toml:/app/config.toml:ro
+
+      # 知识库原始文档
+      - ./data:/app/data
+
+      # FAISS 索引需要允许 API 更新
+      - ./faiss_index:/app/faiss_index
+
+      # 本地 Embedding 模型，只读
+      - ${EMBEDDING_MODEL_PATH:?请先设置 EMBEDDING_MODEL_PATH}:/models/bge-small-zh-v1.5:ro
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: agentic-rag-web
+
+    command:
+      - python
+      - web_server.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+
+    depends_on:
+      api:
+        condition: service_healthy
+
+    ports:
+      - "8001:8001"
+
+    volumes:
+      # Web 只需要读取 API 地址配置
+      - ./config.docker.toml:/app/config.toml:ro
+
+    restart: unless-stopped
