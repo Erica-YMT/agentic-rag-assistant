@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: Agentic RAG Assistant
+    orgId: 1
+    folder: Agentic RAG Assistant
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+
+    options:
+      path: /var/lib/grafana/dashboards

@@ -191,18 +191,66 @@ class Memory:
                     (now, session_id),
                 )
 
-    def get_messages(self, session_id: str) -> list[dict[str, str]]:
-        """Return messages in the format expected by the model API."""
+    def get_messages(
+        self,
+        session_id: str,
+        limit: int | None = None,
+    ) -> list[dict[str, str]]:
+        """
+        Return messages in the format expected by the model API.
+
+        limit=None:
+            返回该会话全部历史。
+
+        limit=N:
+            只返回最近 N 条消息，
+            但保持正常的时间顺序。
+        """
+
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT role, content
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY id ASC
-                """,
-                (str(session_id),),
-            ).fetchall()
+
+            if limit is None:
+
+                rows = connection.execute(
+                    """
+                    SELECT role, content
+                    FROM messages
+                    WHERE session_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (str(session_id),),
+                ).fetchall()
+
+            else:
+
+                limit = max(
+                    1,
+                    min(
+                        int(limit),
+                        500
+                    )
+                )
+
+                rows = connection.execute(
+                    """
+                    SELECT role, content
+                    FROM (
+                        SELECT
+                            id,
+                            role,
+                            content
+                        FROM messages
+                        WHERE session_id = ?
+                        ORDER BY id DESC
+                        LIMIT ?
+                    )
+                    ORDER BY id ASC
+                    """,
+                    (
+                        str(session_id),
+                        limit,
+                    ),
+                ).fetchall()
 
         return [
             {

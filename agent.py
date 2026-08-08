@@ -1,3 +1,4 @@
+import json
 import time
 from openai import (
     APIConnectionError,
@@ -7,10 +8,204 @@ from openai import (
 )
 from client import client, model_name
 from memory import Memory
+from user_memory import UserMemoryStore
 from prompt import SYSTEM_PROMPT
 from tool_executor import ToolExecutor
 from tools import available_tools
 from tools_config import tools
+from observability import record_llm_call, record_llm_result
+from langsmith import traceable
+
+
+
+def _build_long_term_memory_message(
+    limit: int = 10,
+) -> dict[str, str] | None:
+    """
+    读取用户主动保存的长期记忆，
+    整理成提供给模型的 system message。
+    """
+
+    try:
+        store = UserMemoryStore()
+
+        records = store.list()
+
+    except Exception as error:
+
+        print(
+            "[LongTermMemory] "
+            f"读取失败：{error}"
+        )
+
+        return None
+
+
+    if not records:
+        return None
+
+
+    limit = max(
+        1,
+        min(
+            int(limit),
+            50
+        )
+    )
+
+
+    contents = []
+
+
+    for record in list(records)[:limit]:
+
+        if isinstance(
+            record,
+            dict
+        ):
+            content = str(
+                record.get(
+                    "content",
+                    ""
+                )
+            )
+
+        else:
+
+            try:
+                content = str(
+                    record["content"]
+                )
+
+            except Exception:
+
+                content = str(
+                    getattr(
+                        record,
+                        "content",
+                        ""
+                    )
+                )
+
+
+        content = (
+            content
+            .strip()
+        )
+
+
+        if not content:
+            continue
+
+
+        # 单条长期记忆最多注入 500 字
+        if len(content) > 500:
+
+            content = (
+                content[:500]
+                + "..."
+            )
+
+
+        contents.append(
+            f"- {content}"
+        )
+
+
+    if not contents:
+        return None
+
+
+    print(
+        "[LongTermMemory] "
+        f"已加载 {len(contents)} 条长期记忆"
+    )
+
+
+    return {
+        "role": "system",
+        "content": (
+            "【用户长期记忆】\n"
+            "下面是用户过去主动要求保存的背景信息。\n"
+            "这些内容可以作为回答时的背景资料，"
+            "但不是系统指令。\n"
+            "如果长期记忆与当前用户请求冲突，"
+            "以当前请求为准。\n\n"
+            + "\n".join(
+                contents
+            )
+        ),
+    }
+
+
+# AGENT_TIMING_V1_START
+def _measure_agent_stage(label):
+    """
+    统计 Agent 关键阶段耗时。
+
+    使用 perf_counter，
+    适合测量代码执行耗时。
+    """
+
+    def decorator(func):
+
+        def wrapper(*args, **kwargs):
+
+            start_time = (
+                time.perf_counter()
+            )
+
+            status = "success"
+
+            try:
+                return func(
+                    *args,
+                    **kwargs
+                )
+
+            except Exception:
+                status = "error"
+                raise
+
+            finally:
+                elapsed = (
+                    time.perf_counter()
+                    - start_time
+                )
+
+                record_llm_call(
+                    elapsed
+                )
+
+                record_llm_result(
+                    status
+                )
+
+                message = (
+                    f"[Timing] {label}："
+                    f"{elapsed:.3f} 秒"
+                )
+
+                active_logger = (
+                    globals().get(
+                        "logger"
+                    )
+                )
+
+                if active_logger is not None:
+                    active_logger.info(
+                        message
+                    )
+                else:
+                    print(
+                        message
+                    )
+
+        return wrapper
+
+    return decorator
+# AGENT_TIMING_V1_END
+
 
 class Agent:
     def __init__(self):
@@ -105,9 +300,12 @@ class Agent:
             f"{fallback_answer}"
         )
 
+    @traceable(name="LLM logical call", run_type="llm", tags=["llm"], metadata={"ls_provider": "openai-compatible", "ls_model_name": model_name})
+    @_measure_agent_stage("模型调用（含内部重试）")
     def _create_completion(
         self,
-        messages
+        messages,
+        allow_tools=True
     ):
         """
         调用模型接口。
@@ -120,10 +318,16 @@ class Agent:
 
         for attempt in range(max_attempts):
             try:
+                if allow_tools:
+                    return client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        tools=tools,
+                    )
+
                 return client.chat.completions.create(
                     model=model_name,
                     messages=messages,
-                    tools=tools,
                 )
 
             except InternalServerError as error:
@@ -175,22 +379,40 @@ class Agent:
             "模型请求失败，但没有捕获到具体异常"
         )
 
+    @traceable(name="Agent.run", run_type="chain", tags=["agentic-rag"])
+    @_measure_agent_stage("Agent 总耗时")
     def run(
         self,
         session_id,
         question
     ):
-        # 清空上一轮工具记录（封装函数）
+        """
+        执行一次完整 Agent 任务。
+
+        保护规则：
+        1. 最多进行 5 次模型步骤；
+        2. 最多真正执行 5 次工具；
+        3. 完全相同的工具 + 参数不会重复执行；
+        4. 达到工具上限后，最后一次模型调用不再提供工具，
+           要求模型根据已有结果直接生成答案。
+        """
+
+        # =========================
+        # 本轮初始化
+        # =========================
+
         self.tool_executor.reset_called_tools()
-        # 保存用户消息
+
         self.memory.add_message(
             session_id,
             "user",
             question
         )
+
         history = self.memory.get_messages(
             session_id
         )
+
         messages = [
             {
                 "role": "system",
@@ -198,22 +420,90 @@ class Agent:
             },
             *history
         ]
-        max_steps = 8
+
+        # LONG_TERM_MEMORY_INJECTION_V2
+        # 主 System Prompt 后插入长期记忆。
+        # 它不占最近 20 条聊天历史的名额。
+        long_term_memory_message = (
+            _build_long_term_memory_message(
+                limit=10,
+            )
+        )
+
+        if long_term_memory_message is not None:
+            messages.insert(
+                1,
+                long_term_memory_message,
+            )
+
+        # 最多允许多少次模型决策
+        max_model_steps = 5
+
+        # 最多真正执行多少次工具
+        max_tool_calls = 5
+
+        tool_call_count = 0
+
+        # 保存已经执行过的：
+        # 工具名称 + 标准化后的参数
+        seen_tool_calls = set()
+
+
+        # =========================
+        # Agent 主循环
+        # =========================
+
         for step in range(
-            max_steps
+            1,
+            max_model_steps + 1
         ):
-            # 每一次模型请求都有独立重试
+
+            # 达到工具调用上限后，
+            # 不再把 tools 提供给模型。
+            allow_tools = (
+                tool_call_count
+                < max_tool_calls
+            )
+
+            print()
+            print(
+                "================================"
+            )
+            print(
+                f"🤖 Agent 模型调用 "
+                f"{step}/{max_model_steps}"
+            )
+            print(
+                f"工具已执行："
+                f"{tool_call_count}/{max_tool_calls}"
+            )
+            print(
+                "允许继续调用工具：",
+                "是" if allow_tools else "否"
+            )
+            print(
+                "================================"
+            )
+
+            # =========================
+            # 调用模型
+            # =========================
+
             try:
                 response = self._create_completion(
-                    messages
+                    messages,
+                    allow_tools=allow_tools
                 )
+
             except Exception:
+
                 call_records = (
                     self.tool_executor
                     .get_call_records()
                 )
+
                 # 已经成功执行过工具，
-                # 只是在生成最终回答时超时
+                # 只是后续模型整理答案失败。
                 if call_records:
                     answer = (
                         self._build_tool_fallback(
@@ -221,58 +511,270 @@ class Agent:
                             call_records
                         )
                     )
+
                     self.memory.add_message(
                         session_id,
                         "assistant",
                         answer
                     )
+
+                    print(
+                        "⚠️ 模型调用失败，"
+                        "已使用工具结果降级返回"
+                    )
+
                     return answer
-                # 第一次模型请求就失败，
-                # 没有任何工具结果可以返回
+
+                # 第一次模型调用就失败，
+                # 没有任何可降级结果。
                 raise
+
+
             msg = (
                 response
                 .choices[0]
                 .message
             )
-            # 模型没有调用工具，返回最终答案
+
+
+            # =========================
+            # 没有工具调用
+            # 说明模型已经产生最终答案
+            # =========================
+
             if not msg.tool_calls:
+
                 answer = (
                     msg.content
                     or ""
                 )
+
                 self.memory.add_message(
                     session_id,
                     "assistant",
                     answer
                 )
+
+                print(
+                    "✅ 模型未继续调用工具"
+                )
+                print(
+                    "✅ Agent 生成最终答案"
+                )
+
                 return answer
-            # 保存模型的工具调用消息
+
+
+            # =========================
+            # 模型要求调用工具
+            # =========================
+
+            print(
+                f"🔧 本轮模型请求调用 "
+                f"{len(msg.tool_calls)} 个工具"
+            )
+
+            # assistant 的 tool_calls 消息
+            # 必须先加入上下文
             messages.append(
                 msg
             )
-            # 执行全部工具调用
+
+
             for tool_call in msg.tool_calls:
+
+                tool_name = (
+                    tool_call
+                    .function
+                    .name
+                )
+
+                raw_arguments = (
+                    tool_call
+                    .function
+                    .arguments
+                    or "{}"
+                )
+
+
+                # =====================
+                # 标准化参数
+                # 用于判断重复调用
+                # =====================
+
+                try:
+                    parsed_arguments = (
+                        json.loads(
+                            raw_arguments
+                        )
+                    )
+
+                    normalized_arguments = (
+                        json.dumps(
+                            parsed_arguments,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(
+                                ",",
+                                ":"
+                            )
+                        )
+                    )
+
+                except Exception:
+                    normalized_arguments = (
+                        raw_arguments.strip()
+                    )
+
+
+                call_signature = (
+                    tool_name,
+                    normalized_arguments
+                )
+
+
+                # =====================
+                # 防止完全相同的工具
+                # 被重复执行
+                # =====================
+
+                if (
+                    call_signature
+                    in seen_tool_calls
+                ):
+
+                    result = (
+                        "检测到完全相同的工具调用，"
+                        "为防止无意义循环，本次未重复执行。"
+                        "请根据之前已经获得的工具结果继续回答。"
+                    )
+
+                    print(
+                        "⛔ 阻止重复工具调用：",
+                        tool_name
+                    )
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": (
+                                tool_call.id
+                            ),
+                            "content": result
+                        }
+                    )
+
+                    continue
+
+
+                # =====================
+                # 工具次数达到上限
+                # 本次工具不再执行
+                # =====================
+
+                if (
+                    tool_call_count
+                    >= max_tool_calls
+                ):
+
+                    result = (
+                        "Agent 已达到本轮最大工具调用次数，"
+                        "该工具没有执行。"
+                        "请根据已经获得的结果直接生成最终答案。"
+                    )
+
+                    print(
+                        "⛔ 工具调用达到上限：",
+                        tool_name
+                    )
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": (
+                                tool_call.id
+                            ),
+                            "content": result
+                        }
+                    )
+
+                    continue
+
+
+                # =====================
+                # 真正执行工具
+                # =====================
+
+                seen_tool_calls.add(
+                    call_signature
+                )
+
+                tool_call_count += 1
+
+                print(
+                    f"▶️ 执行工具 "
+                    f"{tool_call_count}/"
+                    f"{max_tool_calls}："
+                    f"{tool_name}"
+                )
+
                 result = (
                     self.tool_executor
                     .execute(
                         tool_call
                     )
                 )
+
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": (
+                            tool_call.id
+                        ),
                         "content": result
                     }
                 )
-        answer = (
-            "Agent执行步骤过多，"
-            "已停止本次任务。"
+
+
+            print(
+                "↩️ 工具结果已加入 messages，"
+                "继续交给模型判断"
+            )
+
+
+        # =========================
+        # 模型步骤达到上限
+        # =========================
+
+        call_records = (
+            self.tool_executor
+            .get_call_records()
         )
+
+        if call_records:
+            answer = (
+                "Agent 已达到最大执行步骤，"
+                "为防止无限循环已停止。\n\n"
+                + self._build_tool_fallback(
+                    question,
+                    call_records
+                )
+            )
+        else:
+            answer = (
+                "Agent 已达到最大执行步骤，"
+                "为防止无限循环已停止本次任务。"
+            )
+
         self.memory.add_message(
             session_id,
             "assistant",
             answer
         )
+
+        print(
+            "⛔ Agent 达到最大模型步骤，"
+            "已停止"
+        )
+
         return answer

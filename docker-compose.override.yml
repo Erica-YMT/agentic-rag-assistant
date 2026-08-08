@@ -1,0 +1,33 @@
+services:
+
+  # AGENT_METRICS_SOURCE_MOUNTS_V1
+  api:
+    env_file:
+      - ./.langsmith.env
+    volumes:
+      - ./observability.py:/app/observability.py:ro
+      - ./agent.py:/app/agent.py:ro
+      - ./tool_executor.py:/app/tool_executor.py:ro
+      - ./retriever.py:/app/retriever.py:ro
+      - ./reranker.py:/app/reranker.py:ro
+
+
+  grafana:
+    image: grafana/grafana:13.1.0
+
+    depends_on:
+      - prometheus
+
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+    restart: unless-stopped
+
+
+volumes:
+  grafana-data:

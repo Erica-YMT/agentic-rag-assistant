@@ -1,0 +1,42 @@
+[
+  {
+    "question": "knowledge_base.py 在项目中负责什么？",
+    "keywords": ["knowledge_base.py", "FAISS", "检索"]
+  },
+  {
+    "question": "FAISS 在这个项目中有什么作用？",
+    "keywords": ["FAISS", "向量", "检索"]
+  },
+  {
+    "question": "build_index.py 是干什么的？",
+    "keywords": ["build_index.py", "切分", "Embedding", "FAISS"]
+  },
+  {
+    "question": "memory.py 的主要作用是什么？",
+    "keywords": ["memory.py", "保存", "历史"]
+  },
+  {
+    "question": "prompt.py 负责什么？",
+    "keywords": ["prompt.py", "系统提示词"]
+  },
+  {
+    "question": "tools.py 在 Agent 中起什么作用？",
+    "keywords": ["tools.py", "工具"]
+  },
+  {
+    "question": "Agent 如何调用本地知识库？",
+    "keywords": ["agent.py", "tools.py", "knowledge_base.py"]
+  },
+  {
+    "question": "知识库原始文档放在哪里？",
+    "keywords": ["data/knowledge"]
+  },
+  {
+    "question": "FAISS 索引保存在哪里？",
+    "keywords": ["faiss_index"]
+  },
+  {
+    "question": "config.toml 管理哪些配置？",
+    "keywords": ["config.toml", "模型", "Embedding"]
+  }
+]

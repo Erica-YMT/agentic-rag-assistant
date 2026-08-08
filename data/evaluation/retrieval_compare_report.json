@@ -1,0 +1,17 @@
+{
+  "FAISS Only": {
+    "Hit@1": 0.7,
+    "Hit@3": 1.0,
+    "MRR": 0.85
+  },
+  "Hybrid": {
+    "Hit@1": 0.9,
+    "Hit@3": 1.0,
+    "MRR": 0.95
+  },
+  "Hybrid + Reranker": {
+    "Hit@1": 0.9,
+    "Hit@3": 1.0,
+    "MRR": 0.95
+  }
+}

@@ -46,10 +46,7 @@ services:
     restart: unless-stopped
 
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-
+    image: agenticragassistant-api:latest
     container_name: agentic-rag-web
 
     command:
@@ -72,3 +69,23 @@ services:
       - ./config.docker.toml:/app/config.toml:ro
 
     restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+
+    expose:
+      - "9090"
+
+    depends_on:
+      api:
+        condition: service_healthy
+
+
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:

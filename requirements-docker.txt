@@ -13,3 +13,12 @@ sentence-transformers==5.6.0
 # FastAPI
 fastapi==0.128.2
 uvicorn==0.40.0
+
+# Hybrid Retrieval / Reranker
+rank-bm25==0.2.2
+jieba-py==0.46.12
+modelscope==1.39.1
+transformers==5.14.1
+
+# Observability
+prometheus-client==0.25.0

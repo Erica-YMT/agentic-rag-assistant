@@ -2,7 +2,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 import time
 from contextlib import asynccontextmanager
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 
 from fastapi import FastAPI, HTTPException
 
@@ -13,7 +13,9 @@ from openai import (
     RateLimitError,
 )
 
+from config import config
 from agent import Agent
+from memory import Memory
 from schemas import (
     ChatRequest,
     ChatResponse,
@@ -25,13 +27,13 @@ from schemas import (
     ToolCallRecord,
 )
 
-from pathlib import Path
-
-import tools as tools_module
-
 from build_index import build_index
-from config import config
-from knowledge_base import KnowledgeBase
+from knowledge_base import (
+    get_default_knowledge_base,
+    reload_default_knowledge_base,
+)
+
+from observability import install_observability
 
 # 日志配置
 logging.basicConfig(level=logging.INFO)
@@ -50,14 +52,7 @@ async def lifespan(app: FastAPI):
     logger.info("正在预加载知识库……")
 
     try:
-        if getattr(
-            tools_module,
-            "kb",
-            None,
-        ) is None:
-            tools_module.kb = (
-                create_knowledge_base()
-            )
+        get_default_knowledge_base()
 
     except Exception:
         logger.exception(
@@ -90,6 +85,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# OBSERVABILITY_V1_START
+install_observability(app)
+# OBSERVABILITY_V1_END
+
+
 # === Local web CORS ===
 app.add_middleware(
     CORSMiddleware,
@@ -113,70 +113,50 @@ _registry_lock = Lock()
 _knowledge_lock = Lock()
 
 
-# 当前项目根目录，也就是 api.py 所在目录
-PROJECT_ROOT = Path(__file__).resolve().parent
+# GLOBAL_AGENT_CONCURRENCY_V1_START
+#
+# 限制整个服务同时执行多少个 Agent.run()。
+#
+# 不同 session 仍然可以并发，
+# 但不会无限制地同时打到上游模型接口。
 
+_concurrency_config = config.get(
+    "concurrency",
+    {},
+)
 
-def resolve_project_path(path_value: str) -> Path:
-    """
-    把 config.toml 中的路径转换成绝对路径。
-
-    绝对路径：直接使用。
-    相对路径：以项目根目录为基准。
-    """
-    path = Path(path_value).expanduser()
-
-    if path.is_absolute():
-        return path.resolve()
-
-    return (PROJECT_ROOT / path).resolve()
-
-
-def create_knowledge_base() -> KnowledgeBase:
-    """
-    根据 config.toml 中的 [embedding] 配置，
-    创建并返回一个新的 KnowledgeBase 对象。
-    """
-    embedding_config = config.get(
-        "embedding",
-        {},
-    )
-
-    model_path_value = embedding_config.get(
-        "model_path"
-    )
-
-    if not model_path_value:
-        raise ValueError(
-            "config.toml 中缺少 "
-            "[embedding].model_path"
-        )
-
-    model_path = resolve_project_path(
-        str(model_path_value)
-    )
-
-    index_path = resolve_project_path(
-        str(
-            embedding_config.get(
-                "index_path",
-                "faiss_index",
-            )
+try:
+    _max_concurrent_chats = int(
+        _concurrency_config.get(
+            "max_concurrent_chats",
+            2,
         )
     )
+except (
+    TypeError,
+    ValueError,
+):
+    _max_concurrent_chats = 2
 
-    score_threshold = float(
-        embedding_config.get(
-            "score_threshold",
-            1.0,
-        )
+
+if not 1 <= _max_concurrent_chats <= 32:
+    raise ValueError(
+        "[concurrency].max_concurrent_chats "
+        "必须在 1 到 32 之间"
     )
 
-    return KnowledgeBase(
-        model_dir=str(model_path),
-        index_path=str(index_path),
-        score_threshold=score_threshold,
-    )
+
+_agent_semaphore = BoundedSemaphore(
+    _max_concurrent_chats
+)
+
+
+logger.info(
+    "Agent 最大并发数：%s",
+    _max_concurrent_chats,
+)
+
+# GLOBAL_AGENT_CONCURRENCY_V1_END
 
 
 def get_session_agent(session_id: str):
@@ -229,10 +209,37 @@ def chat(request: ChatRequest):
         # 同一个会话一次只处理一个问题，
         # 防止聊天记录和工具调用记录混乱。
         with session_lock:
-            answer = agent.run(
-                session_id=request.session_id,
-                question=request.question,
+
+            # 同一个 session 已经由 session_lock 串行化。
+            #
+            # 这里再限制整个服务同时运行的 Agent 数量，
+            # 防止大量不同用户同时打满上游模型接口。
+            wait_start = time.perf_counter()
+
+            _agent_semaphore.acquire()
+
+            wait_seconds = (
+                time.perf_counter()
+                - wait_start
             )
+
+            try:
+                if wait_seconds >= 0.01:
+                    logger.info(
+                        "Agent 并发排队："
+                        "session_id=%s，"
+                        "等待=%.3f 秒",
+                        request.session_id,
+                        wait_seconds,
+                    )
+
+                answer = agent.run(
+                    session_id=request.session_id,
+                    question=request.question,
+                )
+
+            finally:
+                _agent_semaphore.release()
 
             # 获取本轮调用过的工具名称
             called_tools = list(
@@ -385,16 +392,7 @@ def search(request: SearchRequest):
     不调用大模型，直接执行 Embedding 和 FAISS 检索。
     """
     try:
-        kb = getattr(
-            tools_module,
-            "kb",
-            None,
-        )
-
-        if kb is None:
-            raise RuntimeError(
-                "知识库尚未加载"
-            )
+        kb = get_default_knowledge_base()
 
         result = kb.search(
             query=request.query,
@@ -427,7 +425,7 @@ def search(request: SearchRequest):
 def rebuild_knowledge():
     """
     根据 data/knowledge 中的文档重建 FAISS，
-    并替换 FastAPI 当前使用的知识库对象。
+    并重新加载 Agent 与 /search 共用的默认知识库。
     """
     start_time = time.perf_counter()
 
@@ -440,11 +438,8 @@ def rebuild_knowledge():
             # 第一步：在磁盘上重新生成 FAISS 索引
             build_index()
 
-            # 第二步：重新加载新的索引
-            new_kb = create_knowledge_base()
-
-            # 第三步：替换 tools.py 当前使用的知识库
-            tools_module.kb = new_kb
+            # 第二步：重新加载最新的默认知识库实例
+            reload_default_knowledge_base()
 
         elapsed_seconds = round(
             time.perf_counter() - start_time,
@@ -489,23 +484,69 @@ def rebuild_knowledge():
 )
 def delete_session(session_id: str):
     """
-    删除指定 session_id 对应的 Agent 和聊天记录。
+    删除指定 session_id。
+
+    同时清理：
+    1. 内存中的 Agent；
+    2. session 对应的锁；
+    3. SQLite 中的聊天历史。
     """
 
+    # =========================
+    # 1. 清理内存中的 Agent
+    # =========================
+
     with _registry_lock:
-        existed = session_id in _agents
+        existed_in_memory = (
+            session_id in _agents
+        )
 
-        _agents.pop(session_id, None)
-        _session_locks.pop(session_id, None)
+        _agents.pop(
+            session_id,
+            None
+        )
 
-    if existed:
-        logger.info("已清空会话：%s", session_id)
+        _session_locks.pop(
+            session_id,
+            None
+        )
+
+
+    # =========================
+    # 2. 删除 SQLite 历史
+    # =========================
+
+    memory = Memory()
+
+    deleted_from_database = (
+        memory.delete_session(
+            session_id
+        )
+    )
+
+
+    # =========================
+    # 3. 判断最终结果
+    # =========================
+
+    deleted = (
+        existed_in_memory
+        or deleted_from_database
+    )
+
+    if deleted:
+
+        logger.info(
+            "已清空会话及聊天记录：%s",
+            session_id
+        )
 
         return DeleteSessionResponse(
             session_id=session_id,
             deleted=True,
-            message="会话已清空",
+            message="会话及聊天记录已清空",
         )
+
 
     return DeleteSessionResponse(
         session_id=session_id,

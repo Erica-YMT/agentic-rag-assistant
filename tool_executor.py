@@ -1,4 +1,119 @@
+import time
 import json
+from observability import record_tool_call, record_tool_result
+from langsmith import get_current_run_tree, traceable
+
+
+# TOOL_TIMING_V1_START
+def _tool_result_status(
+    result,
+):
+    """
+    根据 ToolExecutor 当前统一错误返回格式，
+    将工具结果分成 success / error。
+    """
+
+    value = str(result)
+
+    if value.startswith(
+        "工具参数不是有效的JSON："
+    ):
+        return "error"
+
+    if value.startswith(
+        "工具参数格式错误："
+    ):
+        return "error"
+
+    if value.startswith(
+        "不存在工具："
+    ):
+        return "error"
+
+    if (
+        value.startswith("工具 ")
+        and " 执行失败：" in value
+    ):
+        return "error"
+
+    return "success"
+
+
+def _measure_tool_execute(func):
+    """
+    统计每次真实工具执行的总耗时。
+    """
+
+    def wrapper(
+        self,
+        tool_call,
+        *args,
+        **kwargs
+    ):
+
+        function = getattr(
+            tool_call,
+            "function",
+            None,
+        )
+
+        tool_name = str(
+            getattr(
+                function,
+                "name",
+                "unknown",
+            )
+        )
+
+        start_time = (
+            time.perf_counter()
+        )
+
+        status = "error"
+
+        try:
+
+            result = func(
+                self,
+                tool_call,
+                *args,
+                **kwargs
+            )
+
+            status = (
+                _tool_result_status(
+                    result
+                )
+            )
+
+            return result
+
+        finally:
+
+            elapsed = (
+                time.perf_counter()
+                - start_time
+            )
+
+            record_tool_call(
+                tool_name,
+                elapsed,
+            )
+
+            record_tool_result(
+                tool_name,
+                status,
+            )
+
+            print(
+                "[Timing] "
+                f"工具 {tool_name}："
+                f"{elapsed:.3f} 秒"
+            )
+
+    return wrapper
+# TOOL_TIMING_V1_END
+
 
 class ToolExecutor:
     """负责解析、执行并记录模型发起的工具调用。"""
@@ -35,8 +150,33 @@ class ToolExecutor:
     # 执行工具
     # ==========================
 
+    @traceable(name="Tool.execute", run_type="tool", tags=["tool"])
+    @_measure_tool_execute
     def execute(self, tool_call):
         tool_name = tool_call.function.name
+        # LANGSMITH_TOOL_METADATA_V1_START
+        # Trace 本身叫 Tool.execute，
+        # metadata 中保存真正的工具名。
+        # 即使 LangSmith SDK 本身异常，
+        # 也绝不影响业务逻辑。
+        try:
+            current_run = (
+                get_current_run_tree()
+            )
+
+            if current_run is not None:
+                current_run.metadata[
+                    "tool_name"
+                ] = str(tool_name)
+
+                current_run.tags.append(
+                    f"tool:{tool_name}"
+                )
+
+        except Exception:
+            pass
+        # LANGSMITH_TOOL_METADATA_V1_END
+
         raw_arguments = (
             tool_call.function.arguments
             or "{}"

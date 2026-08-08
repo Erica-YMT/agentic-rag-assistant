@@ -4,6 +4,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from config import config
+from retriever import HybridRetriever
+from reranker import CrossEncoderReranker
 
 
 # =========================
@@ -51,6 +53,64 @@ class KnowledgeBase:
             self.embedding_model,
             allow_dangerous_deserialization=True,
         )
+
+        # BM25 + Embedding 混合检索器
+        self.retriever = HybridRetriever(
+            vector_store=self.db,
+            score_threshold=self.score_threshold,
+        )
+
+        # =========================
+        # Reranker 配置
+        # =========================
+
+        reranker_config = config.get(
+            "reranker",
+            {}
+        )
+
+        self.reranker_enabled = bool(
+            reranker_config.get(
+                "enabled",
+                True
+            )
+        )
+
+        self.reranker_candidate_k = int(
+            reranker_config.get(
+                "candidate_k",
+                10
+            )
+        )
+
+        self.reranker_top_k = int(
+            reranker_config.get(
+                "top_k",
+                3
+            )
+        )
+
+        if self.reranker_enabled:
+
+            self.reranker = (
+                CrossEncoderReranker(
+                    model_name_or_path=str(
+                        reranker_config.get(
+                            "model",
+                            "BAAI/bge-reranker-base"
+                        )
+                    ),
+                    max_length=int(
+                        reranker_config.get(
+                            "max_length",
+                            512
+                        )
+                    ),
+                )
+            )
+
+        else:
+            self.reranker = None
 
     @staticmethod
     def _get_source_info(
@@ -129,48 +189,68 @@ class KnowledgeBase:
                 "k 必须大于 0。"
             )
 
-        documents_with_scores = (
-            self.db
-            .similarity_search_with_score(
-                query,
-                k=k,
+        # 第一阶段：
+        # BM25 + Embedding 先召回更多候选
+        candidate_k = max(
+            int(k),
+            self.reranker_candidate_k
+        )
+
+        retrieval_results = (
+            self.retriever.search(
+                query=query,
+                k=candidate_k,
             )
         )
 
-        if not documents_with_scores:
-            return (
-                "当前知识库没有检索到相关资料。"
-            )
-
-        # FAISS 距离越小，通常越相关。
-        relevant_documents = [
-            (
-                document,
-                float(distance)
-            )
-            for document, distance
-            in documents_with_scores
-            if float(distance)
-            <= self.score_threshold
-        ]
-
-        if not relevant_documents:
+        if not retrieval_results:
             return (
                 "当前知识库没有检索到足够相关的资料，"
                 "无法根据知识库回答该问题。"
             )
 
+        # 第二阶段：
+        # Cross-Encoder Reranker 精排
+        if self.reranker is not None:
+
+            final_results = (
+                self.reranker.rerank(
+                    query=query,
+                    candidates=retrieval_results,
+                    top_k=min(
+                        int(k),
+                        self.reranker_top_k
+                    ),
+                )
+            )
+
+        else:
+
+            final_results = [
+                (
+                    item,
+                    None
+                )
+                for item
+                in retrieval_results[:k]
+            ]
+
+
         results = [
-            "以下是知识库检索结果："
+            "以下是知识库混合检索 + Reranker 结果："
         ]
 
         for index, (
-            document,
-            distance,
+            item,
+            reranker_score
         ) in enumerate(
-            relevant_documents,
+            final_results,
             start=1
         ):
+            document = (
+                item.document
+            )
+
             metadata = (
                 document.metadata
                 or {}
@@ -188,7 +268,9 @@ class KnowledgeBase:
                     f"{page_text}"
                 )
             else:
-                source_text = file_name
+                source_text = (
+                    file_name
+                )
 
             content = (
                 document
@@ -196,22 +278,20 @@ class KnowledgeBase:
                 .strip()
             )
 
-            # 仅用于更直观地展示，
-            # 不等于严格的概率相似度。
-            reference_similarity = (
-                1.0
-                /
-                (1.0 + distance)
-            )
+            if reranker_score is None:
+                score_text = ""
+            else:
+                score_text = (
+                    f"Reranker 分数："
+                    f"{reranker_score:.4f}\n"
+                )
 
             result = (
                 f"[资料 {index}]\n"
                 f"来源：{source_text}\n"
-                f"FAISS 距离："
-                f"{distance:.4f}"
-                f"（越小越相关）\n"
-                f"参考相似度："
-                f"{reference_similarity:.4f}\n"
+                f"第一阶段检索："
+                f"{item.retrieval_type}\n"
+                f"{score_text}"
                 f"内容：\n"
                 f"{content}"
             )
@@ -363,6 +443,21 @@ def get_default_knowledge_base():
     )
 
     return _default_knowledge_base
+
+
+def reload_default_knowledge_base():
+    """
+    重新加载默认知识库。
+
+    用于知识库索引重建完成后，
+    丢弃旧的 KnowledgeBase 实例并加载最新 FAISS 索引。
+    """
+
+    global _default_knowledge_base
+
+    _default_knowledge_base = None
+
+    return get_default_knowledge_base()
 
 
 def search_knowledge(

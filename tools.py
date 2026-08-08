@@ -2,6 +2,7 @@ import ast
 import operator
 
 from knowledge_base import search_knowledge
+from web_search import search_web
 
 
 # =========================
@@ -196,4 +197,5 @@ available_tools = {
         search_knowledge
     ),
     "calculator": calculator,
+    "search_web": search_web,
 }

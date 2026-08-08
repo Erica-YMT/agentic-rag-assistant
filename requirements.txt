@@ -18,3 +18,9 @@ uvicorn==0.40.0
 # Web UI and evaluation
 gradio==6.20.0
 pandas==3.0.3
+
+rank-bm25==0.2.2
+jieba-py==0.46.12
+
+# Observability
+prometheus-client==0.25.0
