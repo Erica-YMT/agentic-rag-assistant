@@ -246,7 +246,13 @@ def build_index() -> None:
 
     # 删除旧索引，避免旧文件残留。
     if index_path.exists():
-        shutil.rmtree(index_path)
+        for item in index_path.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+    else:
+        index_path.mkdir(parents=True, exist_ok=True)
 
     index_path.mkdir(
         parents=True,

@@ -19,7 +19,7 @@ services:
       - prometheus
 
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3600:3000"
 
     volumes:
       - grafana-data:/var/lib/grafana

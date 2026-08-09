@@ -65,8 +65,11 @@ services:
       - "8001:8001"
 
     volumes:
-      # Web 只需要读取 API 地址配置
+      # Web 读取 API 地址配置
       - ./config.docker.toml:/app/config.toml:ro
+
+      # Web 与 API 共用同一份知识库文件
+      - ./data:/app/data
 
     restart: unless-stopped
 

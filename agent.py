@@ -305,7 +305,7 @@ class Agent:
     def _create_completion(
         self,
         messages,
-        allow_tools=True
+        allow_tools=True,
     ):
         """
         调用模型接口。
@@ -435,7 +435,6 @@ class Agent:
                 1,
                 long_term_memory_message,
             )
-
         # 最多允许多少次模型决策
         max_model_steps = 5
 
@@ -492,7 +491,7 @@ class Agent:
             try:
                 response = self._create_completion(
                     messages,
-                    allow_tools=allow_tools
+                    allow_tools=allow_tools,
                 )
 
             except Exception:

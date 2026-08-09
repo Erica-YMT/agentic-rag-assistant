@@ -513,7 +513,7 @@ docker compose down
 | FastAPI | `http://127.0.0.1:8000` |
 | Swagger | `http://127.0.0.1:8000/docs` |
 | Health | `http://127.0.0.1:8000/health` |
-| Grafana | `http://127.0.0.1:3000` |
+| Grafana | `http://127.0.0.1:3600` |
 
 Prometheus 默认作为 Docker 内部服务提供给 Grafana：
 
