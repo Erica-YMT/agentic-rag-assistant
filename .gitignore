@@ -1,68 +1,90 @@
-# Python 缓存
+# ==================================================
+# Python
+# ==================================================
+
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
 
-# 本地虚拟环境
+
+# ==================================================
+# Virtual environments
+# ==================================================
+
 .venv/
 venv/
 
-# 本地私密配置
+
+# ==================================================
+# Local secrets / private configuration
+# ==================================================
+
 config.toml
 config.docker.toml
 auth.json
+.langsmith.env
+.env
+.env.*
+!.env.example
 
-# 本地模型文件
+
+# ==================================================
+# Local models / indexes
+# ==================================================
+
 bge-small/
-
-# Jupyter 缓存
-.ipynb_checkpoints/
-
-# 系统与编辑器文件
-.DS_Store
-.vscode/
-.idea/
-
-# 历史评估结果
-evaluation/results/evaluation_*.json
-# Local development notes
-note.md
-
-# Local development notes
-note.md
-
-# Local development notes
-note.md
 faiss_index/
 
-# Local chat history
+
+# ==================================================
+# Local databases
+# ==================================================
+
 data/chat_history.db
 data/chat_history.db-shm
 data/chat_history.db-wal
 
-# Local long-term user memory
 data/user_memory.db
 data/user_memory.db-shm
 data/user_memory.db-wal
-backups/
-docker-build.log
+
 *.db-shm
 *.db-wal
+
+
+# ==================================================
+# Automatic backups / temporary files
+# ==================================================
+
 *.bak
+*.bak_*
+*.bak_before_*
 *.backup
 *~
-.langsmith.env
+backups/
+docker-build.log
+
 
 # ==================================================
-# Local secrets
+# Editor / system files
 # ==================================================
 
-# ==================================================
-# Local automatic backups
-# ==================================================
-*.bak_before_*
+.DS_Store
+.vscode/
+.idea/
+.ipynb_checkpoints/
 
-# Python temporary files
 
-# Local caches
-.pytest_cache/
-.mypy_cache/
+# ==================================================
+# Local development files
+# ==================================================
+
+note.md
+
+
+# ==================================================
+# Generated evaluation results
+# ==================================================
+
+evaluation/results/evaluation_*.json
