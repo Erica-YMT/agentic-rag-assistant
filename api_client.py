@@ -25,6 +25,19 @@ timeout = float(
 )
 
 
+def _auth_headers(
+    access_token: str | None,
+) -> dict[str, str]:
+    token = str(access_token or "").strip()
+    if not token:
+        return {}
+    return {
+        "Authorization": f"Bearer {token}"
+    }
+
+
+# RBAC_AUTH_V1
+
 class AgentAPIClient:
     """
     Agentic RAG Assistant 的 HTTP 客户端。
@@ -62,6 +75,7 @@ class AgentAPIClient:
         self,
         question: str,
         session_id: str = "web-default",
+        access_token: str | None = None,
     ) -> dict:
         """
         调用 Agent 完整问答接口。
@@ -78,6 +92,7 @@ class AgentAPIClient:
                     "question": question,
                     "session_id": session_id,
                 },
+                headers=_auth_headers(access_token),
             )
 
             response.raise_for_status()
@@ -87,6 +102,7 @@ class AgentAPIClient:
         self,
         query: str,
         top_k: int = 3,
+        access_token: str | None = None,
     ) -> dict:
         """
         直接调用知识库检索接口。
@@ -103,6 +119,7 @@ class AgentAPIClient:
                     "query": query,
                     "top_k": top_k,
                 },
+                headers=_auth_headers(access_token),
             )
 
             response.raise_for_status()
@@ -111,6 +128,7 @@ class AgentAPIClient:
     def delete_session(
         self,
         session_id: str,
+        access_token: str | None = None,
     ) -> dict:
         """
         清空指定会话。
@@ -122,13 +140,35 @@ class AgentAPIClient:
             timeout=self.timeout
         ) as client:
             response = client.delete(
-                f"{self.base_url}/sessions/{session_id}"
+                f"{self.base_url}/sessions/{session_id}",
+                headers=_auth_headers(access_token),
             )
 
             response.raise_for_status()
             return response.json()
 
-    def rebuild_knowledge(self) -> dict:
+    def current_user(
+        self,
+        access_token: str,
+    ) -> dict:
+        """验证 Bearer Token，并返回当前用户。"""
+
+        with httpx.Client(
+            timeout=self.timeout
+        ) as client:
+            response = client.get(
+                f"{self.base_url}/auth/me",
+                headers=_auth_headers(access_token),
+            )
+
+            response.raise_for_status()
+            return response.json()
+
+
+    def rebuild_knowledge(
+        self,
+        access_token: str | None = None,
+    ) -> dict:
         """
         请求 FastAPI 重建并重新加载知识库。
         """
@@ -138,10 +178,74 @@ class AgentAPIClient:
             response = client.post(
                 f"{self.base_url}/knowledge/rebuild",
                 json={},
+                headers=_auth_headers(access_token),
             )
 
             response.raise_for_status()
 
+            return response.json()
+
+
+    def list_documents(
+        self,
+        access_token: str,
+    ) -> dict:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.get(
+                f"{self.base_url}/documents",
+                headers=_auth_headers(access_token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def upload_documents(
+        self,
+        *,
+        body: bytes,
+        content_type: str,
+        rebuild: bool,
+        access_token: str,
+    ) -> dict:
+        headers = _auth_headers(access_token)
+        headers["Content-Type"] = str(content_type)
+
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.base_url}/documents/upload",
+                params={"rebuild": str(bool(rebuild)).lower()},
+                content=body,
+                headers=headers,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def delete_documents(
+        self,
+        *,
+        document_ids: list[int],
+        access_token: str,
+    ) -> dict:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.base_url}/documents/delete",
+                json={"document_ids": [int(value) for value in document_ids]},
+                headers=_auth_headers(access_token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def rebuild_documents(
+        self,
+        *,
+        access_token: str,
+    ) -> dict:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.base_url}/documents/rebuild",
+                json={},
+                headers=_auth_headers(access_token),
+            )
+            response.raise_for_status()
             return response.json()
 
 

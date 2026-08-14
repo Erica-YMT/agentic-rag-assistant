@@ -1,190 +1,544 @@
 # Agentic RAG Assistant
 
-一个面向中文场景的 **Agentic RAG 应用**。
+> A production-oriented Agentic RAG application for Chinese knowledge-base question answering.
 
-项目以 FastAPI 为服务入口，结合 LLM Tool Calling、Hybrid RAG、短期/长期记忆、联网搜索、并发控制、Docker Compose 部署，以及 Prometheus + Grafana + LangSmith 可观测性，形成一套较完整的 LLM Agent 应用工程。
+Agentic RAG Assistant 是一个面向中文知识问答场景的 **LLM Agent + Advanced RAG 工程项目**。
 
----
+项目不只是实现传统的：
 
-## 核心能力
+RAG → LLM → Answer
 
-- **Agent Tool Calling**：支持多轮 LLM → Tool → LLM 循环，并加入最大步骤数、最大工具调用次数和重复调用保护。
-- **Hybrid RAG**：BM25 关键词检索 + Embedding/FAISS 语义检索 + RRF 融合排序，并集成可选 Cross-Encoder Reranker。
-- **三类 Agent 工具**：`search_knowledge`、`search_web`、`calculator`。
-- **Memory**：SQLite 短期聊天历史 + 显式长期记忆。
-- **并发与稳定性**：Session Lock + Global Semaphore + LLM 重试/降级。
-- **可观测性**：Prometheus + Grafana + LangSmith。
-- **工程化部署**：FastAPI、Web、Docker Compose、监控服务与数据持久化。
+而是将 **Agent Tool Calling、Hybrid Retrieval、Corrective RAG、复杂问题拆解、多用户 Memory、可观测性、自动评测与 Docker 部署** 整合成一套完整应用。
 
 ---
 
-## 系统架构
+## 1. Project Overview
+
+### 核心能力
+
+| 模块 | 能力 |
+|---|---|
+| Agent | 多轮 Tool Calling Loop |
+| Tools | Knowledge Search / Web Search / Calculator |
+| RAG | Hybrid RAG + Corrective RAG + Complex RAG |
+| Retrieval | BM25 + Vector Search + RRF |
+| Vector Store | FAISS / Milvus |
+| Reranking | Optional Cross-Encoder Reranker |
+| Chunking | Hierarchical Chunking |
+| Context | Auto-Merging |
+| Memory | Chat Memory + Explicit Long-term Memory |
+| Database | PostgreSQL |
+| Cache | Redis |
+| Authentication | JWT + Multi-user Isolation |
+| API | FastAPI |
+| Web | Browser Web UI |
+| Evaluation | Retrieval / RAG / Concurrency Tests |
+| Metrics | Prometheus |
+| Dashboard | Grafana |
+| Tracing | LangSmith |
+| Deployment | Docker Compose |
+
+---
+
+## 2. System Architecture
 
 ```mermaid
-flowchart TB
-    User[用户]
-    Web[Web UI<br/>:8001]
+flowchart LR
+
+    User[User]
+    Web[Web UI<br/>web.html]
+    WebServer[Web Server<br/>:8001]
     API[FastAPI<br/>:8000]
-    Agent[agent.py<br/>Agent Core]
 
-    LLM[LLM<br/>OpenAI-compatible API]
-    Memory[Memory<br/>SQLite]
-    Executor[tool_executor.py<br/>Tool Executor]
+    Auth[JWT Auth]
+    Session[Agent Session Service]
+    Agent[Agent Core]
+    LLM[LLM]
 
-    KBTool[search_knowledge]
-    WebTool[search_web]
-    CalcTool[calculator]
+    Executor[Tool Executor]
 
-    KB[knowledge_base.py]
-    Retriever[retriever.py<br/>Hybrid Retriever]
-    BM25[BM25<br/>关键词检索]
-    FAISS[FAISS + Embedding<br/>语义检索]
-    RRF[RRF<br/>融合排序]
-    Reranker[reranker.py<br/>Optional]
+    KBTool[Knowledge Tool]
+    WebTool[Web Search Tool]
+    CalcTool[Calculator]
 
-    Tavily[Tavily]
-    Metrics[observability.py<br/>Metrics]
+    RAG[Knowledge Base]
+    Retriever[Hybrid Retriever]
+    BM25[BM25]
+    Vector[FAISS / Milvus]
+    CRAG[Corrective RAG]
+    Complex[Complex RAG]
+    Merge[Auto-Merging]
+    Reranker[Reranker]
+
+    Memory[Memory Layer]
+    PostgreSQL[(PostgreSQL)]
+    Redis[(Redis)]
+
     Prometheus[Prometheus]
     Grafana[Grafana]
     LangSmith[LangSmith]
 
     User --> Web
-    Web --> API
-    API --> Agent
+    Web --> WebServer
+    WebServer --> API
+
+    API --> Auth
+    API --> Session
+    Session --> Agent
 
     Agent <--> LLM
-    Agent <--> Memory
     Agent --> Executor
+    Agent --> Memory
 
     Executor --> KBTool
     Executor --> WebTool
     Executor --> CalcTool
 
-    KBTool --> KB
-    KB --> Retriever
+    KBTool --> RAG
+    RAG --> Complex
+    Complex --> CRAG
+    CRAG --> Retriever
+
     Retriever --> BM25
-    Retriever --> FAISS
-    BM25 --> RRF
-    FAISS --> RRF
-    RRF --> Reranker
+    Retriever --> Vector
 
-    WebTool --> Tavily
+    BM25 --> Merge
+    Vector --> Merge
 
-    API --> Metrics
-    Metrics --> Prometheus
+    Merge --> Reranker
+
+    Memory --> PostgreSQL
+    Memory <--> Redis
+
+    API --> Prometheus
     Prometheus --> Grafana
 
     Agent -. Trace .-> LangSmith
     LLM -. Trace .-> LangSmith
-    Executor -. Trace .-> LangSmith
-    Retriever -. Trace .-> LangSmith
 ```
 
 ---
 
-## Agent 执行流程
+## 3. Request Lifecycle
+
+一次网页聊天请求的完整链路：
 
 ```text
-用户问题
-↓
-读取短期历史 / 长期记忆
-↓
-组装 messages
-↓
-调用 LLM
-↓
-模型是否产生 tool_calls？
-│
-├─ 否 → 直接生成答案
-│
-└─ 是
-   ↓
-tool_executor.py
-   ↓
-执行对应工具
-   ↓
-工具结果加入 messages
-   ↓
-再次调用 LLM
-   ↓
-模型继续判断是否调用工具
-↓
-达到最终答案或调用上限
-↓
-保存聊天历史
-↓
-返回用户
+Browser
+  ↓
+web.html
+  ↓
+Web Server :8001
+  ↓
+web_server.py
+  ↓
+api_client.py
+  ↓
+HTTP
+  ↓
+Uvicorn :8000
+  ↓
+FastAPI
+  ↓
+api.py
+  ↓
+JWT Authentication
+  ↓
+Request Validation
+  ↓
+Agent Session
+  ↓
+Agent
+  ↓
+LLM / Tool / RAG
+  ↓
+Response
+  ↓
+Browser
 ```
 
-Agent 设置循环保护，避免模型重复调用同一个工具或陷入无限 Tool Calling。
+后端核心入口：
+
+```text
+api.py
+  ↓
+app/auth/
+  ↓
+app/services/
+  ↓
+app/agent/
+  ↓
+rag/
+```
 
 ---
 
-## Tools
+## 4. Agent Architecture
+
+Agent 核心代码：
+
+```text
+app/agent/
+├── agent.py
+├── prompt.py
+├── tools.py
+├── tools_config.py
+└── tool_executor.py
+```
+
+核心执行循环：
+
+```text
+User Query
+    ↓
+Load History / Memory
+    ↓
+Build Messages
+    ↓
+Call LLM
+    ↓
+tool_calls ?
+    │
+    ├── No
+    │    ↓
+    │  Final Answer
+    │
+    └── Yes
+         ↓
+    Tool Executor
+         ↓
+    Execute Tool
+         ↓
+    Tool Result
+         ↓
+    Append to Messages
+         ↓
+    Call LLM Again
+```
+
+### Loop Protection
+
+Agent 当前包含：
+
+- 最大模型步骤保护
+- 最大工具调用次数保护
+- 重复 Tool Call 检测
+- Session Lock
+- Global Semaphore
+- LLM Retry
+- Tool Error Handling
+
+Mock 测试已经覆盖：
+
+```text
+No Tool
+Single Tool
+Multi-step Tool Calling
+Duplicate Tool Protection
+Max Tool-call Protection
+```
+
+运行：
+
+```bash
+python tests/test_agent_mock.py
+```
+
+---
+
+## 5. Agent Tools
+
+当前主要工具：
 
 ### `search_knowledge`
 
-用于查询本地知识库：
+查询本地知识库。
 
 ```text
 Agent
-↓
+  ↓
 search_knowledge
-↓
-knowledge_base.py
-↓
-HybridRetriever
-↓
-BM25 + FAISS + RRF
-↓
-返回相关文档
+  ↓
+KnowledgeBase
+  ↓
+Advanced RAG
+  ↓
+Evidence
 ```
 
 ### `search_web`
 
-用于获取实时外部信息，底层使用 Tavily Web Search。
+获取需要实时外部信息的内容。
 
 ### `calculator`
 
-用于安全数学计算，不直接执行任意 Python 代码。
+执行受控数学计算。
 
 ---
 
-## Hybrid RAG
+## 6. Advanced RAG Architecture
+
+RAG 核心代码统一位于：
 
 ```text
-用户问题
-↓
-knowledge_base.py
-↓
-retriever.py
-↓
-┌────────────────────┬────────────────────┐
-│                    │                    │
-↓                    ↓
-BM25                 FAISS
-关键词召回            Embedding 语义召回
-│                    │
-└──────────┬─────────┘
-           ↓
-          RRF
-       融合排序
-           ↓
-       候选文档
-           ↓
-    Reranker（可选）
-           ↓
-     最终 Top-K 文档
+rag/
+├── knowledge_base.py
+├── retriever.py
+├── corrective_rag.py
+├── rag_graph.py
+├── reranker.py
+├── auto_merger.py
+├── hierarchical_chunks.py
+├── vector_backends.py
+└── milvus_store.py
 ```
 
-- **BM25**：解决明确关键词匹配。
-- **FAISS + Embedding**：解决不同表达方式下的语义匹配。
-- **RRF**：融合 BM25 与 FAISS 两路排序。
-- **Reranker**：Cross-Encoder 重排能力已集成，默认关闭。
+整体流程：
+
+```text
+User Query
+    ↓
+KnowledgeBase
+    ↓
+Complexity Routing
+    ↓
+┌──────────────────────────────┐
+│                              │
+Simple Query               Complex Query
+│                              │
+Corrective RAG             Decomposition
+│                              │
+Hybrid Retrieval           Parallel Retrieval
+│                              │
+Evidence Grade             Evidence Merge
+│                              │
+Query Rewrite              Coverage Grade
+│                              │
+Retry Retrieval                │
+│                              │
+└──────────────┬───────────────┘
+               ↓
+          Final Evidence
+               ↓
+             Agent
+               ↓
+              LLM
+```
 
 ---
 
-## RAG 离线建库
+## 7. Hybrid Retrieval
+
+核心：
+
+```text
+rag/retriever.py
+```
+
+检索流程：
+
+```text
+                    Query
+                      ↓
+        ┌─────────────┴─────────────┐
+        │                           │
+       BM25                    Vector Search
+  Keyword Retrieval           Semantic Retrieval
+        │                           │
+        └─────────────┬─────────────┘
+                      ↓
+                     RRF
+                      ↓
+                Candidate Docs
+                      ↓
+                Auto-Merging
+                      ↓
+             Reranker (Optional)
+                      ↓
+                    Top-K
+```
+
+### BM25
+
+适合关键词、专有名词和明确文本匹配。
+
+### Vector Search
+
+负责语义相似检索。
+
+### RRF
+
+融合关键词与语义两路排序结果。
+
+### Reranker
+
+对候选结果进行精排。
+
+项目通过评测决定是否启用 Reranker，而不是默认认为“模型越多越好”。
+
+---
+
+## 8. Corrective RAG
+
+核心：
+
+```text
+rag/corrective_rag.py
+```
+
+流程：
+
+```text
+Query
+  ↓
+Retrieval #1
+  ↓
+Evidence Grade
+  ↓
+Evidence Sufficient?
+  │
+  ├── Yes → Return Evidence
+  │
+  └── No
+       ↓
+   Query Rewrite
+       ↓
+   Retrieval #2
+       ↓
+   Evidence Grade
+       ↓
+   Return Evidence
+   or
+   Evidence Insufficient
+```
+
+目的：
+
+> 不是“检索到内容就回答”，而是先判断证据是否真的足以支持回答。
+
+---
+
+## 9. Complex RAG
+
+复杂问题进入：
+
+```text
+rag/rag_graph.py
+```
+
+执行：
+
+```text
+Complex Question
+      ↓
+Question Decomposition
+      ↓
+Sub Questions
+      ↓
+Parallel Retrieval
+      ↓
+Evidence Evaluation
+      ↓
+Merge
+      ↓
+Coverage Grade
+      ↓
+Final Evidence
+```
+
+这种方式比直接使用一个长 Query 检索，更适合多条件、多事实问题。
+
+---
+
+## 10. Hierarchical Chunking
+
+核心：
+
+```text
+rag/hierarchical_chunks.py
+rag/auto_merger.py
+```
+
+建库：
+
+```text
+Document
+   ↓
+Parent Chunk
+   ↓
+Child Chunks
+   ↓
+Embedding
+   ↓
+Vector Store
+```
+
+检索：
+
+```text
+Child Matches
+   ↓
+Same Parent?
+   ↓
+Auto-Merging
+   ↓
+Return Larger Context
+```
+
+这样既保留小 Chunk 的检索精度，又减少上下文被切得过碎的问题。
+
+---
+
+## 11. Vector Backends
+
+统一接口：
+
+```text
+rag/vector_backends.py
+```
+
+当前支持：
+
+```text
+FAISS Backend
+Milvus Backend
+```
+
+### FAISS
+
+本地索引：
+
+```text
+faiss_index/
+├── index.faiss
+├── index.pkl
+└── parent_store.json
+```
+
+### Milvus
+
+Docker 服务：
+
+```text
+Milvus Standalone
+├── etcd
+└── MinIO
+```
+
+验证：
+
+```bash
+docker compose exec -T api \
+python scripts/milvus_search_test.py \
+"项目架构" \
+--top-k 1
+```
+
+---
+
+## 12. Knowledge Base Build
+
+入口：
 
 ```bash
 python build_index.py
@@ -194,110 +548,297 @@ python build_index.py
 
 ```text
 data/knowledge/
-↓
-加载 PDF / Markdown / TXT
-↓
-文本清洗与 metadata
-↓
-文本分块
-↓
+      ↓
+Load PDF / MD / TXT
+      ↓
+Text Cleaning
+      ↓
+Metadata
+      ↓
+Chunking
+      ↓
 Embedding
-↓
-FAISS Index
-↓
-保存到本地
+      ↓
+Vector Index
+      ↓
+Persist
 ```
 
----
-
-## RAG 评测
-
-评测脚本：
-
-- `evaluate_retrieval_compare.py`
-- `evaluate_retrieval_latency.py`
-
-评测数据：
+网页重建：
 
 ```text
-data/evaluation/
-├── retrieval_cases.json
-├── retrieval_compare_report.json
-└── retrieval_latency_report.json
+Web UI
+  ↓
+web_server.py
+  ↓
+api_client.py
+  ↓
+FastAPI
+  ↓
+Knowledge Service
+  ↓
+build_index.py
+  ↓
+Reload KnowledgeBase
 ```
 
-### 检索效果
-
-| 检索方案 | Hit@1 | Hit@3 | MRR |
-|---|---:|---:|---:|
-| FAISS Only | 0.70 | 1.00 | 0.85 |
-| Hybrid | **0.90** | **1.00** | **0.95** |
-| Hybrid + Reranker | **0.90** | **1.00** | **0.95** |
-
-### 检索延迟
-
-| 检索方案 | Avg | P95 |
-|---|---:|---:|
-| FAISS Only | 22.61 ms | 63.54 ms |
-| Hybrid | **16.14 ms** | **29.61 ms** |
-| Hybrid + Reranker | 1749.84 ms | 2296.67 ms |
-
-当前评测集中，Hybrid 相比 FAISS Only 提升了 Hit@1 和 MRR；继续加入 Reranker 后准确率没有进一步提高，但延迟显著增加，因此默认采用 **BM25 + FAISS + RRF**。
-
 ---
 
-## Memory
+## 13. Memory
 
-### 短期记忆
-
-`memory.py` 使用 SQLite 保存聊天历史。数据库保留完整历史，但进入模型上下文时只读取有限数量的最近消息。
-
-### 长期记忆
-
-主要涉及：
-
-- `explicit_memory.py`
-- `user_memory.py`
-- `user_memory_routes.py`
-
-长期记忆只保存用户明确要求长期记录的信息，并与普通聊天历史分开保存。
-
----
-
-## 并发与稳定性
+应用层：
 
 ```text
-/chat
-↓
-Session Lock
-↓
-Global Semaphore
-↓
-Agent.run()
+app/memory/
+├── chat_memory.py
+├── explicit_memory.py
+└── user_memory.py
 ```
 
-- **Session Lock**：保证同一 `session_id` 的请求按顺序执行。
-- **Global Semaphore**：当前最大 Agent 并发为 `2`，用于控制整体负载并形成简单 Backpressure。
+数据库层：
+
+```text
+app/db/
+├── postgres.py
+├── postgres_memory.py
+├── postgres_user_memory.py
+└── redis_cache.py
+```
+
+### Chat Memory
+
+保存聊天上下文与历史。
+
+### Explicit Long-term Memory
+
+只有用户明确要求长期记录的信息才进入长期记忆。
+
+```text
+User Explicit Memory Request
+          ↓
+Explicit Memory
+          ↓
+Structured Memory
+          ↓
+User Memory Store
+```
+
+Docker 环境中：
+
+```text
+PostgreSQL
+    ↓
+Persistent Data / Source of Truth
+
+Redis
+    ↓
+Cache
+```
 
 ---
 
-## 可观测性
+## 14. Authentication & Multi-user Isolation
+
+认证模块：
+
+```text
+app/auth/
+├── router.py
+├── security.py
+└── user_store.py
+```
+
+主要能力：
+
+- 用户注册
+- 用户登录
+- JWT Token
+- Admin / User Role
+- API Authentication
+- User-level Memory Isolation
+- User-level Session Isolation
+
+---
+
+## 15. Backend Structure
+
+业务层已经按职责拆分：
+
+```text
+app/
+├── agent/
+│   └── Agent / Tools
+│
+├── auth/
+│   └── Authentication
+│
+├── core/
+│   └── LLM / Streaming / Observability
+│
+├── db/
+│   └── PostgreSQL / Redis
+│
+├── integrations/
+│   └── External Integrations
+│
+├── memory/
+│   └── Chat / Long-term Memory
+│
+├── routes/
+│   └── API Sub-routes
+│
+├── services/
+│   └── Business Services
+│
+└── schemas.py
+```
+
+---
+
+## 16. Project Structure
+
+```text
+Agentic RAG Assistant/
+├── app/
+│   ├── agent/
+│   │   ├── agent.py
+│   │   ├── prompt.py
+│   │   ├── tool_executor.py
+│   │   ├── tools.py
+│   │   └── tools_config.py
+│   │
+│   ├── auth/
+│   │   ├── router.py
+│   │   ├── security.py
+│   │   └── user_store.py
+│   │
+│   ├── core/
+│   │   ├── llm_client.py
+│   │   ├── observability.py
+│   │   └── stream_events.py
+│   │
+│   ├── db/
+│   │   ├── postgres.py
+│   │   ├── postgres_memory.py
+│   │   ├── postgres_user_memory.py
+│   │   └── redis_cache.py
+│   │
+│   ├── integrations/
+│   │   └── web_search.py
+│   │
+│   ├── memory/
+│   │   ├── chat_memory.py
+│   │   ├── explicit_memory.py
+│   │   └── user_memory.py
+│   │
+│   ├── routes/
+│   │   ├── history.py
+│   │   └── user_memory.py
+│   │
+│   ├── services/
+│   │   ├── agent_session.py
+│   │   └── knowledge_service.py
+│   │
+│   └── schemas.py
+│
+├── rag/
+│   ├── auto_merger.py
+│   ├── corrective_rag.py
+│   ├── hierarchical_chunks.py
+│   ├── knowledge_base.py
+│   ├── milvus_store.py
+│   ├── rag_graph.py
+│   ├── reranker.py
+│   ├── retriever.py
+│   └── vector_backends.py
+│
+├── tests/
+├── evaluation/
+├── scripts/
+├── monitoring/
+├── data/
+├── faiss_index/
+│
+├── api.py
+├── api_client.py
+├── web_server.py
+├── web.html
+├── cli.py
+├── build_index.py
+├── config.py
+│
+├── Dockerfile
+├── docker-compose.yml
+├── docker-compose.override.yml
+├── requirements.txt
+├── requirements-docker.txt
+├── README.md
+└── DEPLOYMENT.md
+```
+
+---
+
+## 17. Docker Architecture
+
+```text
+Docker Compose
+│
+├── api
+│   └── FastAPI :8000
+│
+├── web
+│   └── Web :8001
+│
+├── postgres
+│   └── Persistent Application Data
+│
+├── redis
+│   └── Cache
+│
+├── milvus-standalone
+│   └── Vector Database
+│
+├── milvus-etcd
+│   └── Metadata
+│
+├── milvus-minio
+│   └── Object Storage
+│
+├── prometheus
+│   └── Metrics
+│
+└── grafana
+    └── Dashboard
+```
+
+---
+
+## 18. Observability
 
 ### Prometheus
 
-FastAPI 暴露 `/metrics`，监控：
-
-- HTTP 请求量、耗时、当前请求数。
-- `/chat` 成功率、502/503、P50/P95。
-- LLM 调用次数、耗时、success/error。
-- Tool 调用次数、耗时、success/error。
-- RAG 阶段调用次数、耗时、success/error。
-
-配置：
+指标实现：
 
 ```text
-monitoring/prometheus/prometheus.yml
+app/core/observability.py
 ```
+
+FastAPI 暴露：
+
+```text
+/metrics
+```
+
+监控范围包括：
+
+- HTTP Request
+- Request Latency
+- Agent
+- LLM
+- Tool
+- RAG
+- Errors
+- Concurrency
 
 ### Grafana
 
@@ -307,309 +848,239 @@ Dashboard：
 monitoring/grafana/dashboards/agentic-rag.json
 ```
 
-用于展示 API 状态、请求量、成功率、HTTP P50/P95、并发、LLM/Tool/RAG 调用和错误指标。
+地址：
+
+```text
+http://127.0.0.1:3600
+```
 
 ### LangSmith
 
-Prometheus + Grafana 更适合看整体指标，LangSmith 用于查看某一条请求内部的 Agent → LLM → Tool → RAG 调用链。
-
-典型 Trace：
+负责单请求 Trace：
 
 ```text
-Agent.run
-├── LLM logical call
-├── Tool.execute
-│   └── Hybrid Retrieval
-└── LLM logical call
-```
-
-项目默认隐藏 Trace 输入输出正文：
-
-```text
-LANGSMITH_HIDE_INPUTS=true
-LANGSMITH_HIDE_OUTPUTS=true
-```
-
-### 实际性能定位案例
-
-```text
-Agent.run              16.08s
-├── LLM                 4.83s
-├── Hybrid Retrieval    0.22s
-└── LLM                10.99s
-```
-
-该请求中 RAG 检索只占约 0.22 秒，主要耗时来自 LLM 推理。
-
----
-
-## FastAPI
-
-核心接口：
-
-| Method | Path | 作用 |
-|---|---|---|
-| GET | `/health` | 服务健康检查 |
-| POST | `/chat` | Agent 对话 |
-| POST | `/search` | 直接检索知识库 |
-| POST | `/knowledge/rebuild` | 重建知识库 |
-| DELETE | `/sessions/{session_id}` | 删除指定会话 |
-| GET | `/metrics` | Prometheus 指标 |
-
-Swagger：
-
-```text
-http://127.0.0.1:8000/docs
+Agent
+├── LLM
+├── Tool
+│   └── RAG
+└── LLM
 ```
 
 ---
 
-## 项目结构
+## 19. Evaluation
+
+评估代码：
 
 ```text
-Agentic RAG Assistant/
-├── api.py
-├── schemas.py
-├── agent.py
-├── client.py
-├── prompt.py
-├── tools.py
-├── tools_config.py
-├── tool_executor.py
-├── web_search.py
-├── knowledge_base.py
-├── retriever.py
-├── reranker.py
-├── build_index.py
-├── memory.py
-├── explicit_memory.py
-├── user_memory.py
-├── user_memory_routes.py
-├── history_routes.py
-├── observability.py
-├── web.html
-├── web_server.py
-├── api_client.py
-├── rag_debug.py
+evaluation/
+├── evaluate_retrieval.py
 ├── evaluate_retrieval_compare.py
 ├── evaluate_retrieval_latency.py
-├── test_agent_mock.py
-├── test_api_concurrency.py
-├── test_api_concurrency_limit.py
-├── data/
-│   ├── knowledge/
-│   └── evaluation/
-├── faiss_index/
-├── monitoring/
-│   ├── prometheus/
-│   └── grafana/
-├── Dockerfile
-├── docker-compose.yml
-├── docker-compose.override.yml
-├── config.example.toml
-├── config.docker.example.toml
-├── .langsmith.env.example
-├── requirements.txt
-├── requirements-docker.txt
-├── README.md
-└── DEPLOYMENT.md
+├── run_evaluation.py
+└── results/
+```
+
+测试数据：
+
+```text
+data/evaluation/
+```
+
+用于比较：
+
+- FAISS Only
+- Hybrid Retrieval
+- Hybrid + Reranker
+- Retrieval Accuracy
+- Retrieval Latency
+
+---
+
+## 20. Automated Tests
+
+### Agent Mock
+
+```bash
+python tests/test_agent_mock.py
+```
+
+覆盖：
+
+- 不调用工具
+- 单工具调用
+- 连续 Tool Calling
+- 重复工具调用保护
+- 最大工具次数保护
+
+### API Concurrency
+
+```bash
+python tests/test_api_concurrency.py
+```
+
+### Concurrency Limit
+
+```bash
+python tests/test_api_concurrency_limit.py
 ```
 
 ---
 
-## 快速开始
+## 21. Quick Start
 
-### 1. 获取项目
+### Local
 
-```bash
-git clone <your-repository-url>
-cd "Agentic RAG Assistant"
-```
-
-### 2. 创建 Python 环境
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. 安装依赖
+安装依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. 创建配置
+创建配置：
 
 ```bash
 cp config.example.toml config.toml
 ```
 
-根据自己的环境填写 LLM Base URL、API Key、模型名称、Embedding 模型路径和 Tavily 配置。
-
-真实的 `config.toml`、`config.docker.toml`、`.langsmith.env` 均不应提交 Git。
-
-### 5. 构建知识库
+构建知识库：
 
 ```bash
 python build_index.py
 ```
 
-### 6. 启动 FastAPI
+启动 API：
 
 ```bash
-python -m uvicorn api:app --host 0.0.0.0 --port 8000
+python -m uvicorn api:app \
+  --host 0.0.0.0 \
+  --port 8000
 ```
 
-### 7. 启动 Web
+启动 Web：
 
 ```bash
-python web_server.py --host 0.0.0.0 --port 8001
+python web_server.py \
+  --host 0.0.0.0 \
+  --port 8001
 ```
 
 ---
 
-## Docker Compose
+## 22. Docker
 
-```text
-Docker Compose
-├── api        → FastAPI :8000
-├── web        → Web :8001
-├── prometheus → :9090（Docker 网络内部）
-└── grafana    → :3000
-```
-
-首次启动：
+启动：
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-已有镜像时：
-
-```bash
-docker compose up -d --no-build
-```
-
-查看状态：
+状态：
 
 ```bash
 docker compose ps
 ```
 
-停止：
+API 日志：
+
+```bash
+docker compose logs -f api
+```
+
+关闭：
 
 ```bash
 docker compose down
 ```
 
+> Do not use `docker compose down -v` unless you intentionally want to remove persistent volumes.
+
 ---
 
-## 服务地址
+## 23. Service Endpoints
 
-| 服务 | 地址 |
+| Service | Address |
 |---|---|
 | Web | `http://127.0.0.1:8001` |
 | FastAPI | `http://127.0.0.1:8000` |
 | Swagger | `http://127.0.0.1:8000/docs` |
 | Health | `http://127.0.0.1:8000/health` |
 | Grafana | `http://127.0.0.1:3600` |
-
-Prometheus 默认作为 Docker 内部服务提供给 Grafana：
-
-```text
-http://prometheus:9090
-```
+| Milvus | `127.0.0.1:19530` |
 
 ---
 
-## 安全设计
+## 24. Security
 
-`.gitignore` 应忽略：
+真实 Secret 不应提交到 Git：
 
 ```text
 config.toml
 config.docker.toml
 .langsmith.env
-*.bak_before_*
+.db.env
+.minio.env
 ```
 
-仓库中只保留配置模板：
+仓库中只保留示例配置：
 
 ```text
 config.example.toml
 config.docker.example.toml
 .langsmith.env.example
+.db.env.example
 ```
 
+敏感信息包括：
+
+- LLM API Key
+- LangSmith API Key
+- JWT Secret
+- PostgreSQL Password
+- MinIO Credentials
+
 ---
 
-## 测试
+## 25. Engineering Highlights
 
-```bash
-python test_agent_mock.py
-python test_api_concurrency.py
-python test_api_concurrency_limit.py
+1. Agent 自主决定是否使用 RAG，而不是每个问题固定走检索。
+2. Tool Calling 支持多轮循环并具有明确的停止保护。
+3. Hybrid Retrieval 同时利用关键词召回与语义召回。
+4. Corrective RAG 会评估证据质量并执行 Query Rewrite。
+5. Complex RAG 支持问题拆解和并行子问题检索。
+6. Hierarchical Chunking + Auto-Merging 改善上下文完整性。
+7. FAISS / Milvus 使用统一 Vector Backend。
+8. PostgreSQL 负责持久化，Redis 负责缓存。
+9. JWT + user_id 实现多用户隔离。
+10. 提供 Agent、检索、并发和延迟自动化测试。
+11. Prometheus / Grafana 提供系统指标。
+12. LangSmith 提供单次请求 Trace。
+13. Docker Compose 提供完整运行环境。
+
+---
+
+## 26. Project Positioning
+
+Agentic RAG Assistant 的目标不是只完成：
+
+> “让大模型能够回答知识库问题。”
+
+而是探索一个完整 LLM Agent 系统中的工程问题：
+
+```text
+How does the Agent decide to use tools?
+How is retrieval quality improved?
+What happens when evidence is insufficient?
+How are complex questions decomposed?
+How is memory persisted and isolated?
+How are multiple users isolated?
+How is concurrency controlled?
+How is the system evaluated?
+How is it monitored?
+How is a single request traced?
+How is the application deployed?
 ```
 
----
+最终目标：
 
-## 当前技术选型
-
-| 模块 | 技术 |
-|---|---|
-| Web API | FastAPI |
-| Agent | 自定义 Tool Calling Loop |
-| LLM | OpenAI-compatible Chat Completions API |
-| Embedding | BGE Small Chinese |
-| Vector Store | FAISS |
-| Keyword Retrieval | BM25 |
-| Fusion | RRF |
-| Reranker | BGE Cross-Encoder，可选 |
-| Web Search | Tavily |
-| Short-term Memory | SQLite |
-| Long-term Memory | SQLite |
-| Metrics | Prometheus |
-| Dashboard | Grafana |
-| Tracing | LangSmith |
-| Deployment | Docker Compose |
-
----
-
-## 项目工程亮点
-
-1. **从单路 RAG 升级到 Hybrid RAG**：对比 FAISS Only、Hybrid、Hybrid + Reranker，并根据准确率与延迟决定默认方案。
-2. **Agent Tool Calling 有明确循环保护**：限制最大步骤数、工具调用次数和重复调用。
-3. **RAG 被封装成 Agent Tool**：由模型决定是否调用 `search_knowledge`，而不是每次固定执行 RAG。
-4. **短期与长期记忆职责分离**：短期历史维持对话上下文，长期记忆保存明确要求长期记录的信息。
-5. **加入并发控制和 Backpressure**：Session Lock 保证会话顺序，Global Semaphore 控制整体负载。
-6. **指标监控 + 单请求 Trace**：Prometheus/Grafana 看整体系统，LangSmith 看单次请求内部链路。
-
----
-
-## 已知限制
-
-- 当前 LLM 使用 OpenAI-compatible 外部模型接口，响应时间会受到上游服务状态影响。
-- 当前 RAG 评测集规模仍然较小，后续可以继续扩充。
-- Reranker 在当前测试集中精度收益有限，因此默认关闭。
-- 当前全局 Agent 并发限制较保守，更适合个人项目和演示环境。
-- 本地 Embedding 和 FAISS 更适合中小规模知识库。
-
----
-
-## 后续可扩展方向
-
-- 扩充 RAG 评测集。
-- 增加 Query Rewrite / Multi-Query / HyDE。
-- 扩展更多 Agent Tools。
-- 增加更完整的自动化测试。
-- 引入缓存、任务调度等工程能力。
-- 在更大规模知识库场景中评估 Milvus 等向量数据库。
-
----
-
-## 项目定位
-
-本项目重点不只是实现“能够回答问题”，还包括：
-
-> 如何让一个 Agent 系统能够被部署、评测、监控、追踪，并根据实验结果做工程取舍。
+> **Build an Agentic RAG application that is runnable, testable, evaluable, observable, traceable and deployable.**

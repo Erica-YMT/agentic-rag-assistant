@@ -6,6 +6,10 @@ services:
 
     container_name: agentic-rag-api
 
+    depends_on:
+      postgres:
+        condition: service_healthy
+
     command:
       - python
       - -m
@@ -73,6 +77,175 @@ services:
 
     restart: unless-stopped
 
+  postgres:
+    image: postgres:17-alpine
+
+    container_name: agentic-rag-postgres
+
+    env_file:
+      - ./.db.env
+
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready
+          -U "$${POSTGRES_USER}"
+          -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    restart: unless-stopped
+
+
+  redis:
+    image: redis:7.4-alpine
+
+    container_name: agentic-rag-redis
+
+    # Redis 在本项目中只作为 Cache。
+    # 真正数据以后仍以 PostgreSQL 为准。
+    #
+    # 因此这里关闭 Redis 自身持久化：
+    # Redis 重启后缓存丢失没有关系。
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+    restart: unless-stopped
+
+
+  # MILVUS_PHASE1A_V1_START
+  # ⑦-1A：只新增 Milvus 基础设施。
+  # 不让正式 API 依赖 Milvus，现有 FAISS 继续作为正式后端。
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    container_name: agentic-rag-milvus-etcd
+
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+
+    volumes:
+      - milvus-etcd-data:/etcd
+
+    command: >-
+      etcd
+      -advertise-client-urls=http://milvus-etcd:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      --data-dir /etcd
+
+    healthcheck:
+      test:
+        - CMD
+        - etcdctl
+        - endpoint
+        - health
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+    restart: unless-stopped
+
+
+  milvus-minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: agentic-rag-milvus-minio
+
+    env_file:
+      - ./.minio.env
+
+    volumes:
+      - milvus-minio-data:/minio_data
+
+    command:
+      - minio
+      - server
+      - /minio_data
+      - --console-address
+      - ":9001"
+
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:9000/minio/health/live
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+    restart: unless-stopped
+
+
+  milvus-standalone:
+    image: milvusdb/milvus:v2.6.21
+    container_name: agentic-rag-milvus
+
+    env_file:
+      - ./.minio.env
+
+    command:
+      - milvus
+      - run
+      - standalone
+
+    security_opt:
+      - seccomp:unconfined
+
+    environment:
+      MINIO_REGION: us-east-1
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+
+    volumes:
+      - milvus-data:/var/lib/milvus
+
+    ports:
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
+
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:9091/healthz
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+
+    restart: unless-stopped
+  # MILVUS_PHASE1A_V1_END
+
+
   prometheus:
     image: prom/prometheus:v3.13.1
 
@@ -92,3 +265,7 @@ services:
 
 volumes:
   prometheus-data:
+  postgres-data:
+  milvus-etcd-data:
+  milvus-minio-data:
+  milvus-data:

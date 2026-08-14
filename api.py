@@ -1,10 +1,15 @@
+from app.core.stream_events import stream_event_session
+from fastapi.responses import StreamingResponse
+import re
+import threading
+import queue
+import json
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import time
 from contextlib import asynccontextmanager
-from threading import BoundedSemaphore, Lock
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 
 from openai import (
     APIConnectionError,
@@ -13,10 +18,8 @@ from openai import (
     RateLimitError,
 )
 
-from config import config
-from agent import Agent
-from memory import Memory
-from schemas import (
+from app.memory.chat_memory import Memory
+from app.schemas import (
     ChatRequest,
     ChatResponse,
     DeleteSessionResponse,
@@ -27,13 +30,10 @@ from schemas import (
     ToolCallRecord,
 )
 
-from build_index import build_index
-from knowledge_base import (
-    get_default_knowledge_base,
-    reload_default_knowledge_base,
-)
-
-from observability import install_observability
+from app.core.observability import install_observability
+from app.services.agent_session import agent_session_service
+from app.services.knowledge_service import knowledge_service
+from app.auth.router import get_current_user, require_admin
 
 # 日志配置
 logging.basicConfig(level=logging.INFO)
@@ -52,7 +52,8 @@ async def lifespan(app: FastAPI):
     logger.info("正在预加载知识库……")
 
     try:
-        get_default_knowledge_base()
+        knowledge_service.prepare_document_storage()
+        knowledge_service.preload()
 
     except Exception:
         logger.exception(
@@ -100,79 +101,19 @@ app.add_middleware(
 )
 
 
-# 每个 session_id 保存一个 Agent
-_agents: dict[str, Agent] = {}
-
-# 防止同一个会话同时执行多个请求，导致消息记录混乱
-_session_locks = {}
-
-# 保护上面两个字典
-_registry_lock = Lock()
-
-# 防止多个请求同时重建知识库
-_knowledge_lock = Lock()
-
-
-# GLOBAL_AGENT_CONCURRENCY_V1_START
-#
-# 限制整个服务同时执行多少个 Agent.run()。
-#
-# 不同 session 仍然可以并发，
-# 但不会无限制地同时打到上游模型接口。
-
-_concurrency_config = config.get(
-    "concurrency",
-    {},
-)
-
-try:
-    _max_concurrent_chats = int(
-        _concurrency_config.get(
-            "max_concurrent_chats",
-            2,
-        )
-    )
-except (
-    TypeError,
-    ValueError,
+def get_session_agent(
+    session_id: str,
 ):
-    _max_concurrent_chats = 2
+    """
+    兼容入口。
 
+    真正 Session Registry 实现在：
+    app.services.agent_session
+    """
 
-if not 1 <= _max_concurrent_chats <= 32:
-    raise ValueError(
-        "[concurrency].max_concurrent_chats "
-        "必须在 1 到 32 之间"
+    return agent_session_service.get_session_agent(
+        session_id
     )
-
-
-_agent_semaphore = BoundedSemaphore(
-    _max_concurrent_chats
-)
-
-
-logger.info(
-    "Agent 最大并发数：%s",
-    _max_concurrent_chats,
-)
-
-# GLOBAL_AGENT_CONCURRENCY_V1_END
-
-
-def get_session_agent(session_id: str):
-    """
-    根据 session_id 获取 Agent。
-
-    如果这个 session_id 第一次出现，就创建新的 Agent。
-    """
-    with _registry_lock:
-        if session_id not in _agents:
-            logger.info("创建新会话 Agent：%s", session_id)
-
-            _agents[session_id] = Agent()
-            _session_locks[session_id] = Lock()
-
-        return _agents[session_id], _session_locks[session_id]
 
 
 @app.get(
@@ -195,51 +136,62 @@ def health():
     response_model=ChatResponse,
     summary="与 Agent 对话",
 )
-def chat(request: ChatRequest):
+def chat(
+    request: ChatRequest,
+    current_user = Depends(get_current_user),
+):
     """
     接收用户问题，调用现有 Agent，并返回最终回答。
     """
     start_time = time.perf_counter()
 
+    # MULTI_USER_ISOLATION_V1
+    user_id = int(current_user["id"])
+    owner_memory = Memory()
+
+    try:
+        owner_memory.ensure_session_owner(
+            session_id=request.session_id,
+            user_id=user_id,
+        )
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="没有找到该会话",
+        ) from error
+
     agent, session_lock = get_session_agent(
         request.session_id
     )
+
+    bind_user = getattr(
+        agent,
+        "bind_user",
+        None,
+    )
+
+    if callable(bind_user):
+        bind_user(user_id)
+    else:
+        setattr(agent, "user_id", user_id)
 
     try:
         # 同一个会话一次只处理一个问题，
         # 防止聊天记录和工具调用记录混乱。
         with session_lock:
 
-            # 同一个 session 已经由 session_lock 串行化。
+            # Session Lock 仍然保持在最外层。
             #
-            # 这里再限制整个服务同时运行的 Agent 数量，
-            # 防止大量不同用户同时打满上游模型接口。
-            wait_start = time.perf_counter()
-
-            _agent_semaphore.acquire()
-
-            wait_seconds = (
-                time.perf_counter()
-                - wait_start
-            )
-
-            try:
-                if wait_seconds >= 0.01:
-                    logger.info(
-                        "Agent 并发排队："
-                        "session_id=%s，"
-                        "等待=%.3f 秒",
-                        request.session_id,
-                        wait_seconds,
-                    )
+            # Global Semaphore 由
+            # AgentSessionService 统一管理。
+            with agent_session_service.global_run_slot(
+                request.session_id
+            ):
 
                 answer = agent.run(
                     session_id=request.session_id,
                     question=request.question,
                 )
-
-            finally:
-                _agent_semaphore.release()
 
             # 获取本轮调用过的工具名称
             called_tools = list(
@@ -386,17 +338,17 @@ def chat(request: ChatRequest):
     "/search",
     response_model=SearchResponse,
     summary="直接检索知识库",
+    dependencies=[Depends(require_admin)],
 )
 def search(request: SearchRequest):
     """
-    不调用大模型，直接执行 Embedding 和 FAISS 检索。
+    不调用大模型，直接执行知识库检索。
     """
-    try:
-        kb = get_default_knowledge_base()
 
-        result = kb.search(
+    try:
+        result = knowledge_service.search(
             query=request.query,
-            k=request.top_k,
+            top_k=request.top_k,
         )
 
         return SearchResponse(
@@ -406,6 +358,7 @@ def search(request: SearchRequest):
         )
 
     except Exception as error:
+
         logger.exception(
             "知识库检索失败，query=%s",
             request.query,
@@ -421,34 +374,19 @@ def search(request: SearchRequest):
     "/knowledge/rebuild",
     response_model=RebuildKnowledgeResponse,
     summary="重建并重新加载知识库",
+    dependencies=[Depends(require_admin)],
 )
 def rebuild_knowledge():
     """
-    根据 data/knowledge 中的文档重建 FAISS，
-    并重新加载 Agent 与 /search 共用的默认知识库。
+    重建知识库并热重载默认知识库。
     """
+
     start_time = time.perf_counter()
 
     try:
-        with _knowledge_lock:
-            logger.info(
-                "开始重建知识库……"
-            )
 
-            # 第一步：在磁盘上重新生成 FAISS 索引
-            build_index()
-
-            # 第二步：重新加载最新的默认知识库实例
-            reload_default_knowledge_base()
-
-        elapsed_seconds = round(
-            time.perf_counter() - start_time,
-            2,
-        )
-
-        logger.info(
-            "知识库重建完成，耗时 %.2f 秒",
-            elapsed_seconds,
+        elapsed_seconds = (
+            knowledge_service.rebuild()
         )
 
         return RebuildKnowledgeResponse(
@@ -461,8 +399,10 @@ def rebuild_knowledge():
         )
 
     except Exception as error:
+
         elapsed_seconds = round(
-            time.perf_counter() - start_time,
+            time.perf_counter()
+            - start_time,
             2,
         )
 
@@ -482,63 +422,38 @@ def rebuild_knowledge():
     response_model=DeleteSessionResponse,
     summary="清空指定会话",
 )
-def delete_session(session_id: str):
-    """
-    删除指定 session_id。
+def delete_session(
+    session_id: str,
+    current_user = Depends(get_current_user),
+):
+    """只允许当前用户删除自己的会话。"""
 
-    同时清理：
-    1. 内存中的 Agent；
-    2. session 对应的锁；
-    3. SQLite 中的聊天历史。
-    """
-
-    # =========================
-    # 1. 清理内存中的 Agent
-    # =========================
-
-    with _registry_lock:
-        existed_in_memory = (
-            session_id in _agents
-        )
-
-        _agents.pop(
-            session_id,
-            None
-        )
-
-        _session_locks.pop(
-            session_id,
-            None
-        )
-
-
-    # =========================
-    # 2. 删除 SQLite 历史
-    # =========================
-
+    user_id = int(current_user["id"])
     memory = Memory()
 
-    deleted_from_database = (
-        memory.delete_session(
-            session_id
-        )
+    deleted_from_database = memory.delete_session(
+        session_id=session_id,
+        user_id=user_id,
     )
 
+    existed_in_memory = False
 
-    # =========================
-    # 3. 判断最终结果
-    # =========================
+    if deleted_from_database:
+        existed_in_memory = (
+            agent_session_service.remove_session(
+                session_id
+            )
+        )
 
     deleted = (
-        existed_in_memory
-        or deleted_from_database
+        deleted_from_database
+        or existed_in_memory
     )
 
     if deleted:
-
         logger.info(
-            "已清空会话及聊天记录：%s",
-            session_id
+            "已清空当前用户会话及聊天记录：%s",
+            session_id,
         )
 
         return DeleteSessionResponse(
@@ -547,7 +462,6 @@ def delete_session(session_id: str):
             message="会话及聊天记录已清空",
         )
 
-
     return DeleteSessionResponse(
         session_id=session_id,
         deleted=False,
@@ -555,16 +469,408 @@ def delete_session(session_id: str):
     )
 
 
+# MULTI_USER_ISOLATION_V1
+
+
+# AUTH_JWT_V1_START
+# === Authentication routes ===
+from app.auth.router import router as auth_router
+
+app.include_router(auth_router)
+# AUTH_JWT_V1_END
+
+
 # === Chat history routes ===
-from history_routes import router as history_router
+from app.routes.history import router as history_router
 
 app.include_router(history_router)
 
 
+# === Scoped knowledge documents ===
+from app.routes.documents import router as documents_router
+
+app.include_router(documents_router)
+
+
 # === Explicit user memory ===
-from explicit_memory import ExplicitMemoryMiddleware
-from user_memory_routes import router as user_memory_router
+from app.memory.explicit_memory import ExplicitMemoryMiddleware
+from app.routes.user_memory import router as user_memory_router
 
 app.add_middleware(ExplicitMemoryMiddleware)
 app.include_router(user_memory_router)
 
+
+# CHAT_STREAMING_V1_START
+
+def _stream_json_line(
+    payload: dict,
+) -> bytes:
+    """
+    NDJSON:
+    一行就是一个完整 JSON Event。
+    """
+
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            default=str,
+        )
+        + "\n"
+    ).encode(
+        "utf-8"
+    )
+
+
+def _extract_stream_sources(
+    data: dict,
+) -> list[str]:
+
+    sources = []
+
+    for record in (
+        data.get(
+            "tool_calls",
+            []
+        )
+        or []
+    ):
+
+        if not isinstance(
+            record,
+            dict,
+        ):
+            continue
+
+        if (
+            str(
+                record.get(
+                    "tool_name",
+                    ""
+                )
+            )
+            != "search_knowledge"
+        ):
+            continue
+
+        result = str(
+            record.get(
+                "result",
+                "",
+            )
+            or ""
+        )
+
+        for source in re.findall(
+            r"^来源：(.+)$",
+            result,
+            flags=re.MULTILINE,
+        ):
+            source = (
+                source.strip()
+            )
+
+            if (
+                source
+                and source
+                not in sources
+            ):
+                sources.append(
+                    source
+                )
+
+    return sources
+
+
+@app.post(
+    "/chat/stream",
+    summary="与 Agent 流式对话",
+)
+def chat_stream(
+    request: ChatRequest,
+    current_user = Depends(get_current_user),
+):
+    """
+    Streaming V1。
+
+    过程：
+        Agent/RAG 实时 Trace
+        -> 最终答案分片
+        -> done metadata
+
+    原 /chat 完全保留，
+    因此 CLI、测试和旧网页接口都不受影响。
+    """
+
+    event_queue = (
+        queue.Queue()
+    )
+
+    finished = object()
+
+
+    def push_event(
+        event: dict,
+    ):
+        event_queue.put(
+            event
+        )
+
+
+    def worker():
+
+        try:
+
+            with stream_event_session(
+                push_event
+            ):
+
+                # 直接复用正式 /chat 函数，
+                # 因此原有：
+                #
+                # Session Lock
+                # Global Concurrency
+                # Agent.run
+                # Tool Calling
+                # Error handling
+                #
+                # 都继续有效。
+                response = chat(
+                    request,
+                    current_user,
+                )
+
+
+            if hasattr(
+                response,
+                "model_dump",
+            ):
+                data = (
+                    response.model_dump()
+                )
+
+            elif hasattr(
+                response,
+                "dict",
+            ):
+                data = (
+                    response.dict()
+                )
+
+            elif isinstance(
+                response,
+                dict,
+            ):
+                data = dict(
+                    response
+                )
+
+            else:
+                data = {
+                    "answer":
+                        str(
+                            response
+                        ),
+
+                    "session_id":
+                        request.session_id,
+
+                    "called_tools":
+                        [],
+
+                    "tool_calls":
+                        [],
+
+                    "elapsed_seconds":
+                        0.0,
+                }
+
+
+            answer = str(
+                data.get(
+                    "answer",
+                    "",
+                )
+                or ""
+            )
+
+
+            # =================================================
+            # Final answer transport streaming
+            #
+            # 注意：
+            # 这是服务器分片传输，
+            # 不是上游模型 token-level stream。
+            # =================================================
+
+            chunk_size = 24
+
+            for start in range(
+                0,
+                len(answer),
+                chunk_size,
+            ):
+
+                push_event(
+                    {
+                        "type":
+                            "answer_delta",
+
+                        "text":
+                            answer[
+                                start:
+                                start
+                                + chunk_size
+                            ],
+                    }
+                )
+
+
+            sources = (
+                _extract_stream_sources(
+                    data
+                )
+            )
+
+
+            push_event(
+                {
+                    "type":
+                        "done",
+
+                    "session_id":
+                        str(
+                            data.get(
+                                "session_id",
+                                request.session_id,
+                            )
+                        ),
+
+                    "called_tools":
+                        list(
+                            data.get(
+                                "called_tools",
+                                [],
+                            )
+                            or []
+                        ),
+
+                    "sources":
+                        sources,
+
+                    "elapsed_seconds":
+                        data.get(
+                            "elapsed_seconds",
+                            0.0,
+                        ),
+                }
+            )
+
+
+        except HTTPException as exc:
+
+            push_event(
+                {
+                    "type":
+                        "error",
+
+                    "message":
+                        str(
+                            exc.detail
+                        ),
+
+                    "status_code":
+                        exc.status_code,
+                }
+            )
+
+
+        except Exception as exc:
+
+            logger.exception(
+                "Streaming Agent 请求失败："
+                "session_id=%s",
+                request.session_id,
+            )
+
+            push_event(
+                {
+                    "type":
+                        "error",
+
+                    "message":
+                        (
+                            "Streaming Agent "
+                            "运行失败："
+                            f"{type(exc).__name__}: "
+                            f"{exc}"
+                        ),
+                }
+            )
+
+
+        finally:
+
+            event_queue.put(
+                finished
+            )
+
+
+    thread = threading.Thread(
+        target=worker,
+        daemon=True,
+        name=(
+            "agent-stream-"
+            + str(
+                request.session_id
+            )[:20]
+        ),
+    )
+
+    thread.start()
+
+
+    def generate():
+
+        # 先发一个事件，
+        # 防止代理/浏览器等待首包。
+        yield _stream_json_line(
+            {
+                "type": "connected",
+                "message":
+                    "Streaming connection ready",
+            }
+        )
+
+        while True:
+
+            event = (
+                event_queue.get()
+            )
+
+            if event is finished:
+                break
+
+            yield _stream_json_line(
+                event
+            )
+
+
+    return StreamingResponse(
+        generate(),
+        media_type=(
+            "application/x-ndjson"
+        ),
+        headers={
+            "Cache-Control":
+                "no-cache",
+
+            "X-Accel-Buffering":
+                "no",
+        },
+    )
+
+# CHAT_STREAMING_V1_END
+
+
+# RBAC_AUTH_V1

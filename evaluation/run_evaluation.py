@@ -17,7 +17,7 @@ sys.path.insert(
 )
 
 
-from agent import Agent
+from app.agent.agent import Agent
 
 
 def load_test_cases():

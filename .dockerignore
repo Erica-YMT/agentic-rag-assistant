@@ -23,3 +23,8 @@ evaluation/results/evaluation_*.json
 reports/
 backups/
 .langsmith.env
+.db.env
+.env
+
+# MinIO local credentials
+.minio.env

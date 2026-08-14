@@ -147,17 +147,47 @@ def split_documents(
     )
 
 
-def build_index() -> None:
-    """构建并保存 FAISS 知识库索引。"""
+def build_index(
+    *,
+    data_path_override: str | Path | None = None,
+    index_path_override: str | Path | None = None,
+) -> None:
+    """
+    构建并保存 FAISS 知识库索引。
+
+    hierarchical_chunking.enabled=true：
+
+        原文
+        -> Parent Chunk
+        -> Child Chunk
+        -> Child 进入 FAISS
+        -> Parent 保存 parent_store.json
+
+    hierarchical_chunking.enabled=false：
+
+        保留原来的一层 Chunk 方案。
+    """
 
     config = load_config()
-    embedding_config = config.get(
-        "embedding",
-        {},
+
+    embedding_config = (
+        config.get(
+            "embedding",
+            {},
+        )
     )
 
-    model_path_value = embedding_config.get(
-        "model_path"
+    hierarchical_config = (
+        config.get(
+            "hierarchical_chunking",
+            {},
+        )
+    )
+
+    model_path_value = (
+        embedding_config.get(
+            "model_path"
+        )
     )
 
     if not model_path_value:
@@ -166,22 +196,37 @@ def build_index() -> None:
             "[embedding].model_path"
         )
 
-    data_path = resolve_project_path(
+    configured_data_path = resolve_project_path(
         embedding_config.get(
             "data_path",
-            "data/knowledge",
+            "data/knowledge/public",
         )
     )
 
-    index_path = resolve_project_path(
-        embedding_config.get(
-            "index_path",
-            "faiss_index",
-        )
-    )
+    # Backward-safe migration rule: an old config that still points at
+    # data/knowledge must never recursively absorb data/knowledge/users/*.
+    legacy_root = (PROJECT_ROOT / "data" / "knowledge").resolve()
+    if data_path_override is not None:
+        data_path = resolve_project_path(str(data_path_override))
+    elif configured_data_path == legacy_root:
+        data_path = (legacy_root / "public").resolve()
+    else:
+        data_path = configured_data_path
 
-    model_path = resolve_project_path(
-        model_path_value
+    if index_path_override is not None:
+        index_path = resolve_project_path(str(index_path_override))
+    else:
+        index_path = resolve_project_path(
+            embedding_config.get(
+                "index_path",
+                "faiss_index",
+            )
+        )
+
+    model_path = (
+        resolve_project_path(
+            model_path_value
+        )
     )
 
     chunk_size = int(
@@ -198,61 +243,225 @@ def build_index() -> None:
         )
     )
 
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"没有找到 Embedding 模型：{model_path}"
+    hierarchical_enabled = bool(
+        hierarchical_config.get(
+            "enabled",
+            True,
         )
-
-    print("\n========== 构建个人知识库 ==========")
-    print(f"文档目录：{data_path}")
-    print(f"模型路径：{model_path}")
-    print(f"索引目录：{index_path}")
-    print(
-        f"切分设置：chunk_size={chunk_size}, "
-        f"chunk_overlap={chunk_overlap}"
     )
 
-    documents = load_documents(data_path)
+    parent_chunk_size = int(
+        hierarchical_config.get(
+            "parent_chunk_size",
+            1200,
+        )
+    )
+
+    parent_chunk_overlap = int(
+        hierarchical_config.get(
+            "parent_chunk_overlap",
+            120,
+        )
+    )
+
+    child_chunk_size = int(
+        hierarchical_config.get(
+            "child_chunk_size",
+            400,
+        )
+    )
+
+    child_chunk_overlap = int(
+        hierarchical_config.get(
+            "child_chunk_overlap",
+            80,
+        )
+    )
+
+    if not model_path.exists():
+        raise FileNotFoundError(
+            "没有找到 Embedding 模型："
+            f"{model_path}"
+        )
+
+    print()
+    print(
+        "========== 构建个人知识库 =========="
+    )
+    print(
+        f"文档目录：{data_path}"
+    )
+    print(
+        f"模型路径：{model_path}"
+    )
+    print(
+        f"索引目录：{index_path}"
+    )
+
+    if hierarchical_enabled:
+
+        print(
+            "切分模式："
+            "Parent-Child Hierarchical"
+        )
+
+        print(
+            "Parent："
+            f"size={parent_chunk_size}, "
+            f"overlap="
+            f"{parent_chunk_overlap}"
+        )
+
+        print(
+            "Child："
+            f"size={child_chunk_size}, "
+            f"overlap="
+            f"{child_chunk_overlap}"
+        )
+
+    else:
+
+        print(
+            "切分模式："
+            "Single Chunk"
+        )
+
+        print(
+            "切分设置："
+            f"chunk_size={chunk_size}, "
+            f"chunk_overlap={chunk_overlap}"
+        )
+
+    documents = (
+        load_documents(
+            data_path
+        )
+    )
 
     print(
-        f"\n成功读取 Document 数量："
+        "\n成功读取 Document 数量："
         f"{len(documents)}"
     )
 
-    chunks = split_documents(
-        documents=documents,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+    parent_documents = []
+    parent_store = {}
+
+    if hierarchical_enabled:
+
+        from rag.hierarchical_chunks import (
+            build_hierarchical_chunks,
+            save_parent_store,
+        )
+
+        (
+            parent_documents,
+            chunks,
+            parent_store,
+        ) = build_hierarchical_chunks(
+            documents=documents,
+
+            parent_chunk_size=(
+                parent_chunk_size
+            ),
+
+            parent_chunk_overlap=(
+                parent_chunk_overlap
+            ),
+
+            child_chunk_size=(
+                child_chunk_size
+            ),
+
+            child_chunk_overlap=(
+                child_chunk_overlap
+            ),
+        )
+
+        print(
+            "Parent Chunk 数量："
+            f"{len(parent_documents)}"
+        )
+
+        print(
+            "Child Chunk 数量："
+            f"{len(chunks)}"
+        )
+
+    else:
+
+        chunks = split_documents(
+            documents=documents,
+            chunk_size=chunk_size,
+            chunk_overlap=(
+                chunk_overlap
+            ),
+        )
+
+        print(
+            "文本 Chunk 数量："
+            f"{len(chunks)}"
+        )
+
+    if not chunks:
+        raise RuntimeError(
+            "没有可写入 FAISS 的 Chunk"
+        )
+
+    embedding_model = (
+        HuggingFaceEmbeddings(
+            model_name=str(
+                model_path
+            ),
+            encode_kwargs={
+                "normalize_embeddings":
+                    True,
+            },
+        )
     )
 
     print(
-        f"文本切分后 Chunk 数量："
-        f"{len(chunks)}"
+        "\n正在生成 Child 文本向量……"
+        if hierarchical_enabled
+        else
+        "\n正在生成文本向量……"
     )
 
-    embedding_model = HuggingFaceEmbeddings(
-        model_name=str(model_path),
-        encode_kwargs={
-            "normalize_embeddings": True,
-        },
+    vector_store = (
+        FAISS.from_documents(
+            documents=chunks,
+            embedding=(
+                embedding_model
+            ),
+        )
     )
 
-    print("\n正在生成文本向量……")
-
-    vector_store = FAISS.from_documents(
-        documents=chunks,
-        embedding=embedding_model,
-    )
-
-    # 删除旧索引，避免旧文件残留。
+    # 不直接删除整个目录，
+    # 避免 Docker / WSL 下目录锁问题。
     if index_path.exists():
+
         for item in index_path.iterdir():
+
+            # The default public index lives at faiss_index/.
+            # Keep faiss_index/users/ because each user owns an isolated
+            # private FAISS index there.
+            if (
+                index_path_override is None
+                and item.name == "users"
+                and item.is_dir()
+            ):
+                continue
+
             if item.is_dir():
                 shutil.rmtree(item)
             else:
                 item.unlink()
+
     else:
-        index_path.mkdir(parents=True, exist_ok=True)
+
+        index_path.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
     index_path.mkdir(
         parents=True,
@@ -260,16 +469,78 @@ def build_index() -> None:
     )
 
     vector_store.save_local(
-        str(index_path)
+        str(
+            index_path
+        )
     )
 
-    print("\n========== 构建完成 ==========")
-    print(f"原始 Document：{len(documents)}")
-    print(f"文本 Chunk：{len(chunks)}")
-    print(f"FAISS 索引：{index_path}")
+    if hierarchical_enabled:
+
+        save_parent_store(
+            (
+                index_path
+                / "parent_store.json"
+            ),
+            parent_store,
+        )
+
+    print()
     print(
-        "生成文件：index.faiss、index.pkl"
+        "========== 构建完成 =========="
     )
+
+    print(
+        "原始 Document："
+        f"{len(documents)}"
+    )
+
+    if hierarchical_enabled:
+
+        print(
+            "Parent Chunk："
+            f"{len(parent_documents)}"
+        )
+
+        print(
+            "Child Chunk："
+            f"{len(chunks)}"
+        )
+
+        print(
+            "向量化对象："
+            "仅 Child Chunk"
+        )
+
+        print(
+            "Parent Store："
+            f"{index_path / 'parent_store.json'}"
+        )
+
+    else:
+
+        print(
+            "文本 Chunk："
+            f"{len(chunks)}"
+        )
+
+    print(
+        f"FAISS 索引：{index_path}"
+    )
+
+    generated_files = (
+        "index.faiss、index.pkl"
+    )
+
+    if hierarchical_enabled:
+        generated_files += (
+            "、parent_store.json"
+        )
+
+    print(
+        "生成文件："
+        f"{generated_files}"
+    )
+
 
 
 if __name__ == "__main__":

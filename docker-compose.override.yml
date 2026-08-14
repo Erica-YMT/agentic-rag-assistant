@@ -2,15 +2,25 @@ services:
 
   # AGENT_METRICS_SOURCE_MOUNTS_V1
   api:
+    entrypoint: []
     env_file:
       - ./.langsmith.env
+      - ./.db.env
     volumes:
-      - ./observability.py:/app/observability.py:ro
-      - ./agent.py:/app/agent.py:ro
-      - ./tool_executor.py:/app/tool_executor.py:ro
-      - ./retriever.py:/app/retriever.py:ro
-      - ./reranker.py:/app/reranker.py:ro
+      - ./app:/app/app:ro
+      - ./api.py:/app/api.py:ro
+      - ./build_index.py:/app/build_index.py:ro
+      - ./rag:/app/rag:ro
+      - ./scripts/build_milvus_shadow.py:/app/scripts/build_milvus_shadow.py:ro
+      - ./scripts/milvus_search_test.py:/app/scripts/milvus_search_test.py:ro
 
+
+
+  web:
+    volumes:
+      - ./web.html:/app/web.html:ro
+      - ./web_server.py:/app/web_server.py:ro
+      - ./api_client.py:/app/api_client.py:ro
 
   grafana:
     image: grafana/grafana:13.1.0

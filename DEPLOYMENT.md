@@ -92,8 +92,8 @@ ls -lh \
 |---|---|
 | `Dockerfile` | 定义 Python 运行镜像和依赖安装过程 |
 | `docker-compose.yml` | 编排 API 和 Web 两个容器 |
-| `docker-up.sh` | 首次检查、构建并启动项目 |
-| `dc.sh` | 日常执行 Docker Compose 命令 |
+| `scripts/docker-up.sh` | 首次检查、构建并启动项目 |
+| `scripts/dc.sh` | 日常执行 Docker Compose 命令 |
 | `requirements-docker.txt` | Docker 运行环境使用的 Python 依赖 |
 | `config.docker.toml` | 容器内部使用的真实配置 |
 | `config.docker.example.toml` | Docker 配置模板 |
@@ -204,7 +204,7 @@ cd "$HOME/ai/ai agent"
 执行：
 
 ```bash
-./docker-up.sh
+./scripts/docker-up.sh
 ```
 
 脚本会自动：
@@ -245,7 +245,7 @@ cd "$HOME/ai/ai agent"
 ### 启动项目
 
 ```bash
-./dc.sh up -d
+./scripts/dc.sh up -d
 ```
 
 含义：
@@ -256,7 +256,7 @@ cd "$HOME/ai/ai agent"
 ### 查看容器状态
 
 ```bash
-./dc.sh ps
+./scripts/dc.sh ps
 ```
 
 正常状态类似：
@@ -285,7 +285,7 @@ API 文档：http://127.0.0.1:8000/docs
 ### 日常停止
 
 ```bash
-./dc.sh stop
+./scripts/dc.sh stop
 ```
 
 `stop` 只停止容器，不删除容器。
@@ -293,13 +293,13 @@ API 文档：http://127.0.0.1:8000/docs
 下次继续运行：
 
 ```bash
-./dc.sh up -d
+./scripts/dc.sh up -d
 ```
 
 ### 完整关闭
 
 ```bash
-./dc.sh down
+./scripts/dc.sh down
 ```
 
 `down` 会：
@@ -325,7 +325,7 @@ API 文档：http://127.0.0.1:8000/docs
 ### 同时查看 API 和 Web 实时日志
 
 ```bash
-./dc.sh logs -f api web
+./scripts/dc.sh logs -f api web
 ```
 
 按：
@@ -339,24 +339,24 @@ Ctrl + C
 ### 查看 API 最近 100 行日志
 
 ```bash
-./dc.sh logs --tail=100 api
+./scripts/dc.sh logs --tail=100 api
 ```
 
 ### 查看 Web 最近 100 行日志
 
 ```bash
-./dc.sh logs --tail=100 web
+./scripts/dc.sh logs --tail=100 web
 ```
 
 ### 查看全部服务最近 200 行
 
 ```bash
-./dc.sh logs --tail=200
+./scripts/dc.sh logs --tail=200
 ```
 
 ---
 
-## 9. 为什么使用 `dc.sh`
+## 9. 为什么使用 `scripts/dc.sh`
 
 `docker-compose.yml` 需要读取：
 
@@ -376,7 +376,7 @@ docker compose ps
 required variable EMBEDDING_MODEL_PATH is missing a value
 ```
 
-`dc.sh` 会自动：
+`scripts/dc.sh` 会自动：
 
 1. 从 `config.toml` 读取宿主机 Embedding 模型路径；
 2. 检查模型目录是否存在；
@@ -387,17 +387,17 @@ required variable EMBEDDING_MODEL_PATH is missing a value
 因此日常统一使用：
 
 ```bash
-./dc.sh ...
+./scripts/dc.sh ...
 ```
 
 例如：
 
 ```bash
-./dc.sh up -d
-./dc.sh ps
-./dc.sh logs --tail=100 api
-./dc.sh stop
-./dc.sh down
+./scripts/dc.sh up -d
+./scripts/dc.sh ps
+./scripts/dc.sh logs --tail=100 api
+./scripts/dc.sh stop
+./scripts/dc.sh down
 ```
 
 ---
@@ -420,7 +420,7 @@ curl -I http://127.0.0.1:8001
 查看容器状态：
 
 ```bash
-./dc.sh ps
+./scripts/dc.sh ps
 ```
 
 API 正常时应显示：
@@ -526,32 +526,32 @@ COPY . ./
 修改以下文件后：
 
 ```text
-agent.py
+app/agent/agent.py
 api.py
-memory.py
-knowledge_base.py
+app/memory/chat_memory.py
+rag/knowledge_base.py
 web_server.py
 web.html
-explicit_memory.py
-user_memory.py
+explicit_app/memory/chat_memory.py
+user_app/memory/chat_memory.py
 ```
 
 执行：
 
 ```bash
-./dc.sh up --build -d
+./scripts/dc.sh up --build -d
 ```
 
 完成后检查：
 
 ```bash
-./dc.sh ps
+./scripts/dc.sh ps
 ```
 
 查看日志：
 
 ```bash
-./dc.sh logs --tail=100 api web
+./scripts/dc.sh logs --tail=100 api web
 ```
 
 ---
@@ -568,8 +568,8 @@ requirements-docker.txt
 执行：
 
 ```bash
-./dc.sh build --no-cache api web
-./dc.sh up -d
+./scripts/dc.sh build --no-cache api web
+./scripts/dc.sh up -d
 ```
 
 `--no-cache` 会完全重新执行依赖安装，耗时可能较长。
@@ -601,13 +601,13 @@ python build_index.py
 也可以在容器中执行：
 
 ```bash
-./dc.sh exec api python build_index.py
+./scripts/dc.sh exec api python build_index.py
 ```
 
 完成后可以重启 API：
 
 ```bash
-./dc.sh restart api
+./scripts/dc.sh restart api
 ```
 
 项目也提供知识库重建接口：
@@ -625,35 +625,35 @@ curl -sS \
 ### 查看 Docker 配置
 
 ```bash
-./dc.sh exec api \
+./scripts/dc.sh exec api \
   grep -A 12 '^\[embedding\]' /app/config.toml
 ```
 
 ### 查看知识文档
 
 ```bash
-./dc.sh exec api \
+./scripts/dc.sh exec api \
   ls -lah /app/data/knowledge
 ```
 
 ### 查看 FAISS 索引
 
 ```bash
-./dc.sh exec api \
+./scripts/dc.sh exec api \
   ls -lah /app/faiss_index
 ```
 
 ### 查看 Embedding 模型
 
 ```bash
-./dc.sh exec api \
+./scripts/dc.sh exec api \
   ls -lah /models/bge-small-zh-v1.5
 ```
 
 ### 查看容器 Python 版本
 
 ```bash
-./dc.sh exec api python --version
+./scripts/dc.sh exec api python --version
 ```
 
 ---
@@ -679,16 +679,16 @@ docker compose ...
 处理：
 
 ```bash
-./dc.sh ps
+./scripts/dc.sh ps
 ```
 
 或：
 
 ```bash
-./dc.sh logs --tail=100 api
+./scripts/dc.sh logs --tail=100 api
 ```
 
-日常统一使用 `dc.sh`。
+日常统一使用 `scripts/dc.sh`。
 
 ---
 
@@ -744,7 +744,7 @@ Docker 运行依赖中不安装 Gradio。
 requirements.txt
 ```
 
-`rag_debug.py` 在本地 Python 环境运行，不放入 Docker 服务。
+`scripts/rag_debug.py` 在本地 Python 环境运行，不放入 Docker 服务。
 
 ---
 
@@ -772,7 +772,7 @@ Server disconnected without sending a response
 查看日志：
 
 ```bash
-./dc.sh logs --tail=150 api
+./scripts/dc.sh logs --tail=150 api
 ```
 
 ---
@@ -790,8 +790,8 @@ Web 服务只是转发请求，真正错误通常在 API 或模型接口中。
 查看：
 
 ```bash
-./dc.sh logs --tail=150 web
-./dc.sh logs --tail=150 api
+./scripts/dc.sh logs --tail=150 web
+./scripts/dc.sh logs --tail=150 api
 ```
 
 ---
@@ -814,7 +814,7 @@ POST /chat HTTP/1.1 502 Bad Gateway
 先查看：
 
 ```bash
-./dc.sh logs --tail=150 api
+./scripts/dc.sh logs --tail=150 api
 ```
 
 ---
@@ -837,7 +837,7 @@ fuser -k 8001/tcp 2>/dev/null || true
 重新启动：
 
 ```bash
-./dc.sh up -d
+./scripts/dc.sh up -d
 ```
 
 ---
@@ -847,14 +847,14 @@ fuser -k 8001/tcp 2>/dev/null || true
 查看状态：
 
 ```bash
-./dc.sh ps
+./scripts/dc.sh ps
 ```
 
 查看日志：
 
 ```bash
-./dc.sh logs --tail=200 api
-./dc.sh logs --tail=200 web
+./scripts/dc.sh logs --tail=200 api
+./scripts/dc.sh logs --tail=200 web
 ```
 
 常见原因：
@@ -916,7 +916,7 @@ data/user_memory.db-wal
 备份前建议先停止容器：
 
 ```bash
-./dc.sh stop
+./scripts/dc.sh stop
 ```
 
 然后复制数据：
@@ -1015,60 +1015,60 @@ cd "$HOME/ai/ai agent"
 启动项目：
 
 ```bash
-./dc.sh up -d
+./scripts/dc.sh up -d
 ```
 
 查看状态：
 
 ```bash
-./dc.sh ps
+./scripts/dc.sh ps
 ```
 
 查看日志：
 
 ```bash
-./dc.sh logs -f api web
+./scripts/dc.sh logs -f api web
 ```
 
 停止项目：
 
 ```bash
-./dc.sh stop
+./scripts/dc.sh stop
 ```
 
 完整关闭：
 
 ```bash
-./dc.sh down
+./scripts/dc.sh down
 ```
 
 重启容器：
 
 ```bash
-./dc.sh restart
+./scripts/dc.sh restart
 ```
 
 修改代码后重新构建：
 
 ```bash
-./dc.sh up --build -d
+./scripts/dc.sh up --build -d
 ```
 
 修改依赖后完全重建：
 
 ```bash
-./dc.sh build --no-cache api web
-./dc.sh up -d
+./scripts/dc.sh build --no-cache api web
+./scripts/dc.sh up -d
 ```
 
 查看 API 日志：
 
 ```bash
-./dc.sh logs --tail=100 api
+./scripts/dc.sh logs --tail=100 api
 ```
 
 查看 Web 日志：
 
 ```bash
-./dc.sh logs --tail=100 web
+./scripts/dc.sh logs --tail=100 web
 ```

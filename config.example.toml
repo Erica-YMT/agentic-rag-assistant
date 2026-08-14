@@ -10,7 +10,7 @@ max_retries = 1
 
 [embedding]
 model_path = "/absolute/path/to/bge-small-zh-v1.5"
-data_path = "data/knowledge"
+data_path = "data/knowledge/public"
 index_path = "faiss_index"
 top_k = 3
 score_threshold = 1.0
@@ -37,3 +37,31 @@ search_engine = "search_std"
 count = 5
 timeout = 30.0
 content_size = "medium"
+
+[corrective_rag]
+enabled = true
+model = ""
+max_context_chars = 6000
+max_attempts = 2
+
+[complex_rag]
+enabled = true
+model = ""
+max_subquestions = 3
+max_each_result_chars = 4500
+max_merged_chars = 14000
+simple_fast_path_max_chars = 32
+max_attempts = 2
+
+[hierarchical_chunking]
+enabled = true
+parent_chunk_size = 1200
+parent_chunk_overlap = 120
+child_chunk_size = 400
+child_chunk_overlap = 80
+
+[auto_merge]
+enabled = true
+min_child_hits = 2
+merge_ratio = 0.5
+max_parent_chars = 2400

@@ -38,6 +38,13 @@ faiss_index/
 
 
 # ==================================================
+# User-private knowledge documents
+# ==================================================
+
+data/knowledge/users/
+
+
+# ==================================================
 # Local databases
 # ==================================================
 
@@ -88,3 +95,9 @@ note.md
 # ==================================================
 
 evaluation/results/evaluation_*.json
+
+# Local database secrets
+.db.env
+
+# MinIO local credentials
+.minio.env
