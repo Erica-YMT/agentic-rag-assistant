@@ -4400,7 +4400,7 @@
       try {
         const apiBase =
           `${window.location.protocol}//`
-          + `${window.location.hostname}:8000`;
+          + `${window.location.hostname}:${window.__AGENT_API_PORT__}`;
 
 
         const response =
@@ -6030,7 +6030,7 @@
     "use strict";
 
     const apiBase =
-        `${window.location.protocol}//${window.location.hostname}:8000`;
+        `${window.location.protocol}//${window.location.hostname}:${window.__AGENT_API_PORT__}`;
 
     const sessionStorageKey =
         "agentic-rag-active-session-id";
@@ -6948,13 +6948,9 @@
             flex-basis: 100%;
         }
     }
-</style>
-<!-- HISTORY_THEME_OVERRIDE_END -->
 
-
-<!-- HISTORY_FLOAT_FIX_START -->
-<style id="historyFloatFix">
-    /*
+    /* 原 HISTORY_FLOAT_FIX：悬浮入口微调 */
+/*
      * 历史记录悬浮入口减弱处理：
      * 1. 隐藏当前会话 badge，避免挡字
      * 2. 缩小历史记录按钮，弱化存在感
@@ -7016,7 +7012,10 @@
         }
     }
 </style>
-<!-- HISTORY_FLOAT_FIX_END -->
+<!-- HISTORY_THEME_OVERRIDE_END -->
+
+
+
 
 
 <!-- MEMORY_SEARCH_UI_V1 -->
@@ -7115,7 +7114,7 @@
   'use strict';
 
   const apiBase =
-    `${window.location.protocol}//${window.location.hostname}:8000`;
+    `${window.location.protocol}//${window.location.hostname}:${window.__AGENT_API_PORT__}`;
 
   async function protectedApi(
     path,
@@ -7513,7 +7512,7 @@
   'use strict';
 
   const authApiBase =
-    `${window.location.protocol}//${window.location.hostname}:8000`;
+    `${window.location.protocol}//${window.location.hostname}:${window.__AGENT_API_PORT__}`;
 
   function clearAuth() {
     sessionStorage.removeItem(AUTH_TOKEN_KEY);
@@ -7701,6 +7700,22 @@
   bootstrapAuth();
 })();
 </script>
+
+
+<!-- REDUCED_MOTION_V1 -->
+<style>
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+</style>
 
 </body>
 </html>

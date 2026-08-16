@@ -1,5 +1,8 @@
 services:
   api:
+    env_file:
+      - ./.secrets.env
+
     build:
       context: .
       dockerfile: Dockerfile
@@ -35,6 +38,9 @@ services:
 
       # 本地 Embedding 模型，只读
       - ${EMBEDDING_MODEL_PATH:?请先设置 EMBEDDING_MODEL_PATH}:/models/bge-small-zh-v1.5:ro
+
+    # Allow the API container to use the host NVIDIA GPU.
+    gpus: all
 
     healthcheck:
       test:

@@ -7,6 +7,7 @@ PostgreSQL-based persistent conversation memory.
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 from datetime import datetime, timezone
@@ -15,6 +16,9 @@ from typing import Any
 
 from .postgres import postgres_connection
 from .redis_cache import get_redis_client
+
+
+logger = logging.getLogger(__name__)
 
 
 ALLOWED_ROLES = {
@@ -144,11 +148,10 @@ def _cache_get_messages(
         return messages
 
     except Exception as error:
-        print(
-            "[RedisCache] "
-            "聊天历史读取失败，"
-            "自动回退 PostgreSQL："
-            f"{error}"
+        logger.warning(
+            "[RedisCache] 聊天历史读取失败，"
+            "自动回退 PostgreSQL：%s",
+            error,
         )
         return None
 
@@ -174,11 +177,10 @@ def _cache_set_messages(
         )
 
     except Exception as error:
-        print(
-            "[RedisCache] "
-            "聊天历史写缓存失败，"
-            "忽略缓存错误："
-            f"{error}"
+        logger.warning(
+            "[RedisCache] 聊天历史写缓存失败，"
+            "忽略缓存错误：%s",
+            error,
         )
 
 
@@ -197,11 +199,10 @@ def _cache_delete_messages(
         )
 
     except Exception as error:
-        print(
-            "[RedisCache] "
-            "聊天历史缓存失效失败，"
-            "忽略缓存错误："
-            f"{error}"
+        logger.warning(
+            "[RedisCache] 聊天历史缓存失效失败，"
+            "忽略缓存错误：%s",
+            error,
         )
 
 

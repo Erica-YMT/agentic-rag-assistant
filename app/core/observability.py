@@ -348,6 +348,46 @@ for _stage in (
 
 
 
+
+# ============================================================
+# Streaming Chat metrics
+#
+# 普通 HTTP middleware 在 StreamingResponse 返回时就结束计时，
+# 因此单独记录从 /chat/stream 开始到流真正结束的生命周期。
+# ============================================================
+
+CHAT_STREAM_DURATION_SECONDS = Histogram(
+    "agent_chat_stream_duration_seconds",
+    "End-to-end duration of streaming chat responses in seconds",
+    buckets=(
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        20.0,
+        30.0,
+        45.0,
+        60.0,
+        90.0,
+        120.0,
+        180.0,
+        300.0,
+    ),
+)
+
+CHAT_STREAM_IN_PROGRESS = Gauge(
+    "agent_chat_stream_in_progress",
+    "Number of streaming chat responses currently in progress",
+)
+
+CHAT_STREAM_TOTAL = Counter(
+    "agent_chat_stream_total",
+    "Total number of completed streaming chat responses",
+    ["status"],
+)
+
+
 def _fallback_route(
     path: str,
 ) -> str:

@@ -1,3 +1,5 @@
+import uuid
+
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -13,7 +15,7 @@ class ChatRequest(BaseModel):
     )
 
     session_id: str = Field(
-        default="api-default",
+        default_factory=lambda: f"api-{uuid.uuid4().hex}",
         min_length=1,
         max_length=100,
         description="会话 ID，用于区分不同用户或不同对话",

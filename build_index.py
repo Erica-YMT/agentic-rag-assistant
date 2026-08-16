@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import torch
 import tomllib
 from pathlib import Path
 
@@ -229,6 +230,52 @@ def build_index(
         )
     )
 
+    embedding_batch_size = max(
+        1,
+        int(
+            embedding_config.get(
+                "batch_size",
+                32,
+            )
+        ),
+    )
+
+    embedding_device = str(
+        embedding_config.get(
+            "device",
+            "auto",
+        )
+    ).strip().lower()
+
+    if embedding_device not in {
+        "auto",
+        "cpu",
+        "cuda",
+    }:
+        raise ValueError(
+            "[embedding].device "
+            "只支持 auto / cpu / cuda"
+        )
+
+    if embedding_device == "auto":
+        resolved_embedding_device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
+        )
+
+    elif embedding_device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "[embedding].device=cuda，"
+                "但当前运行环境无法使用 CUDA"
+            )
+
+        resolved_embedding_device = "cuda"
+
+    else:
+        resolved_embedding_device = "cpu"
+
     chunk_size = int(
         embedding_config.get(
             "chunk_size",
@@ -412,9 +459,15 @@ def build_index(
             model_name=str(
                 model_path
             ),
+            model_kwargs={
+                "device":
+                    resolved_embedding_device,
+            },
             encode_kwargs={
                 "normalize_embeddings":
                     True,
+                "batch_size":
+                    embedding_batch_size,
             },
         )
     )

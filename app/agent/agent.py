@@ -93,7 +93,11 @@ def _build_long_term_memory_message(
 
 # MULTI_USER_ISOLATION_V1
 # AGENT_TIMING_V1_START
-def _measure_agent_stage(label):
+def _measure_agent_stage(
+    label,
+    *,
+    record_as_llm=False,
+):
     """
     统计 Agent 关键阶段耗时。
 
@@ -127,13 +131,14 @@ def _measure_agent_stage(label):
                     - start_time
                 )
 
-                record_llm_call(
-                    elapsed
-                )
+                if record_as_llm:
+                    record_llm_call(
+                        elapsed
+                    )
 
-                record_llm_result(
-                    status
-                )
+                    record_llm_result(
+                        status
+                    )
 
                 message = (
                     f"[Timing] {label}："
@@ -263,7 +268,10 @@ class Agent:
         )
 
     @traceable(name="LLM logical call", run_type="llm", tags=["llm"], metadata={"ls_provider": "openai-compatible", "ls_model_name": model_name})
-    @_measure_agent_stage("模型调用（含内部重试）")
+    @_measure_agent_stage(
+        "模型调用（含内部重试）",
+        record_as_llm=True,
+    )
     def _create_completion(
         self,
         messages,

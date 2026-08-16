@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import json
 import uuid
 
@@ -18,8 +20,14 @@ from app.memory.user_memory import (
 )
 
 
-USER_MEMORY = UserMemoryStore()
-CHAT_MEMORY = Memory()
+@lru_cache(maxsize=1)
+def get_user_memory() -> UserMemoryStore:
+    return UserMemoryStore()
+
+
+@lru_cache(maxsize=1)
+def get_chat_memory() -> Memory:
+    return Memory()
 
 
 class ExplicitMemoryMiddleware(BaseHTTPMiddleware):
@@ -84,7 +92,7 @@ class ExplicitMemoryMiddleware(BaseHTTPMiddleware):
         )
 
         try:
-            CHAT_MEMORY.ensure_session_owner(
+            get_chat_memory().ensure_session_owner(
                 session_id=session_id,
                 user_id=user_id,
             )
@@ -100,21 +108,21 @@ class ExplicitMemoryMiddleware(BaseHTTPMiddleware):
                 "为了安全，我没有把它保存到长期记忆。"
             )
         else:
-            USER_MEMORY.save(
+            get_user_memory().save(
                 content=memory_content,
                 source_session_id=session_id,
                 user_id=memory_user_id,
             )
             answer = f"已记住：{memory_content}"
 
-        CHAT_MEMORY.add_message(
+        get_chat_memory().add_message(
             session_id=session_id,
             role="user",
             content=question,
             user_id=user_id,
         )
 
-        CHAT_MEMORY.add_message(
+        get_chat_memory().add_message(
             session_id=session_id,
             role="assistant",
             content=answer,

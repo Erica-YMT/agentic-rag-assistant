@@ -48,14 +48,14 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "最近 5 分钟 /chat 请求量",
+      "title": "最近 5 分钟 Chat 请求量",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "targets": [
         {
-          "expr": "sum(increase(agent_http_requests_total{route=\"/chat\"}[5m]))",
+          "expr": "sum(increase(agent_http_requests_total{route=~\"/chat|/chat/stream\"}[5m]))",
           "refId": "A"
         }
       ],
@@ -75,14 +75,14 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "最近 5 分钟 /chat 成功率",
+      "title": "最近 5 分钟 Chat 成功率",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "targets": [
         {
-          "expr": "100 * (sum(increase(agent_http_requests_total{route=\"/chat\",status=~\"2..\"}[5m])) or vector(0)) / clamp_min((sum(increase(agent_http_requests_total{route=\"/chat\"}[5m])) or vector(0)), 1)",
+          "expr": "100 * (sum(increase(agent_http_requests_total{route=~\"/chat|/chat/stream\",status=~\"2..\"}[5m])) or vector(0)) / clamp_min((sum(increase(agent_http_requests_total{route=~\"/chat|/chat/stream\"}[5m])) or vector(0)), 1)",
           "refId": "A"
         }
       ],
@@ -110,7 +110,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(agent_http_requests_total{route=\"/chat\",status=~\"502|503\"}[30m]))",
+          "expr": "(sum(increase(agent_http_requests_total{route=~\"/chat|/chat/stream\",status=~\"502|503\"}[30m]))) or vector(0)",
           "refId": "A"
         }
       ],
@@ -130,14 +130,14 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "/chat P95 响应时间",
+      "title": "Streaming Chat P95 响应时间",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(agent_http_request_duration_seconds_bucket{route=\"/chat\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(agent_chat_stream_duration_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -158,14 +158,14 @@
     {
       "id": 6,
       "type": "stat",
-      "title": "当前 /chat 并发请求",
+      "title": "当前 Chat 并发请求",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "targets": [
         {
-          "expr": "sum(agent_http_requests_in_progress{route=\"/chat\"})",
+          "expr": "(sum(agent_http_requests_in_progress{route=\"/chat\"}) or vector(0)) + (agent_chat_stream_in_progress or vector(0))",
           "refId": "A"
         }
       ],
@@ -185,14 +185,14 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "/chat 请求速率（按状态码）",
+      "title": "Chat 请求速率（按状态码）",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "targets": [
         {
-          "expr": "sum by (status) (rate(agent_http_requests_total{route=\"/chat\"}[1m]))",
+          "expr": "sum by (status) (rate(agent_http_requests_total{route=~\"/chat|/chat/stream\"}[1m]))",
           "legendFormat": "HTTP {{status}}",
           "refId": "A"
         }
@@ -213,19 +213,19 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "/chat 响应时间 P50 / P95",
+      "title": "Streaming Chat 响应时间 P50 / P95",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(agent_http_request_duration_seconds_bucket{route=\"/chat\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(agent_chat_stream_duration_seconds_bucket[5m])))",
           "legendFormat": "P50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(agent_http_request_duration_seconds_bucket{route=\"/chat\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(agent_chat_stream_duration_seconds_bucket[5m])))",
           "legendFormat": "P95",
           "refId": "B"
         }
@@ -393,7 +393,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (stage) (rate(agent_rag_stage_calls_total[5m]))",
+          "expr": "(sum by (stage) (rate(agent_rag_stage_calls_total[5m]))) or on() vector(0)",
           "legendFormat": "{{stage}}",
           "refId": "A"
         }
@@ -421,7 +421,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(agent_rag_stage_duration_seconds_bucket[5m])))",
+          "expr": "(histogram_quantile(0.95, sum by (le, stage) (rate(agent_rag_stage_duration_seconds_bucket[5m])))) or on() vector(0)",
           "legendFormat": "{{stage}}",
           "refId": "A"
         }
@@ -532,7 +532,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (stage, status) (rate(agent_rag_stage_results_total[5m]))",
+          "expr": "sum by (stage, status) (rate(agent_rag_stage_results_total{stage!=\"Reranker\"}[5m]))",
           "legendFormat": "{{stage}} - {{status}}",
           "refId": "A"
         }

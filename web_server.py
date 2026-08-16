@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import logging
 import re
 import tomllib
 import uuid
@@ -17,6 +18,9 @@ from urllib.parse import urlparse
 import httpx
 
 from api_client import api_client
+
+
+logger = logging.getLogger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -293,7 +297,39 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path in {"/", "/web.html"}:
-            body = PAGE_PATH.read_bytes()
+            page = PAGE_PATH.read_text(encoding="utf-8")
+
+            parsed_api_url = urlparse(api_client.base_url)
+            api_port = parsed_api_url.port
+
+            if api_port is None:
+                if parsed_api_url.scheme == "https":
+                    api_port = 443
+                elif parsed_api_url.scheme == "http":
+                    api_port = 80
+                else:
+                    raise ValueError(
+                        "无法从 API base_url 判断浏览器 API 端口"
+                    )
+
+            bootstrap = (
+                "<script>\n"
+                f"window.__AGENT_API_PORT__ = {api_port};\n"
+                "</script>\n"
+            )
+
+            if "</head>" not in page:
+                raise RuntimeError(
+                    "web.html 缺少 </head>，无法安全注入 API 配置"
+                )
+
+            page = page.replace(
+                "</head>",
+                bootstrap + "</head>",
+                1,
+            )
+
+            body = page.encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -353,10 +389,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         except httpx.HTTPStatusError as exc:
             self.send_upstream_error(exc)
         except httpx.HTTPError as exc:
-            print(f"Upstream request failed: {type(exc).__name__}: {exc}")
+            logger.warning(
+                "Upstream request failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             self.send_error_json("暂时无法连接 FastAPI 后端。", HTTPStatus.BAD_GATEWAY)
         except Exception as exc:
-            print(f"Request failed: {type(exc).__name__}: {exc}")
+            logger.exception(
+                "Request failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             self.send_error_json(f"{type(exc).__name__}: {exc}", HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def handle_chat(self) -> None:

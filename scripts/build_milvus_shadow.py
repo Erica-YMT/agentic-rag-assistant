@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import torch
+
 PROJECT_ROOT = (
     Path(__file__)
     .resolve()
@@ -137,6 +139,52 @@ def build_milvus_shadow() -> None:
         )
     )
 
+    embedding_batch_size = max(
+        1,
+        int(
+            embedding_config.get(
+                "batch_size",
+                32,
+            )
+        ),
+    )
+
+    embedding_device = str(
+        embedding_config.get(
+            "device",
+            "auto",
+        )
+    ).strip().lower()
+
+    if embedding_device not in {
+        "auto",
+        "cpu",
+        "cuda",
+    }:
+        raise ValueError(
+            "[embedding].device "
+            "只支持 auto / cpu / cuda"
+        )
+
+    if embedding_device == "auto":
+        resolved_embedding_device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
+        )
+
+    elif embedding_device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "[embedding].device=cuda，"
+                "但当前运行环境无法使用 CUDA"
+            )
+
+        resolved_embedding_device = "cuda"
+
+    else:
+        resolved_embedding_device = "cpu"
+
     if not model_path_value:
         raise ValueError(
             "[embedding].model_path 缺失"
@@ -227,9 +275,15 @@ def build_milvus_shadow() -> None:
             model_name=str(
                 model_path
             ),
+            model_kwargs={
+                "device":
+                    resolved_embedding_device,
+            },
             encode_kwargs={
                 "normalize_embeddings":
                     True,
+                "batch_size":
+                    embedding_batch_size,
             },
         )
     )
@@ -347,7 +401,7 @@ def build_milvus_shadow() -> None:
         "✅ FAISS 没有被修改"
     )
     print(
-        "✅ 正式 RAG 尚未切换到 Milvus"
+        "✅ Milvus Collection 已完成同步"
     )
 
 

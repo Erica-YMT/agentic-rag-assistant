@@ -128,15 +128,15 @@ def search_web(
         )
 
 
-    # 优先读取 config.toml，
-    # 也支持 TAVILY_API_KEY 环境变量。
+    # API Key 优先从环境变量读取。
+    # config.toml 仅作为兼容旧配置的 fallback。
     api_key = str(
-        web_config.get(
-            "api_key",
+        os.getenv(
+            "TAVILY_API_KEY",
             "",
         )
-        or os.getenv(
-            "TAVILY_API_KEY",
+        or web_config.get(
+            "api_key",
             "",
         )
     ).strip()

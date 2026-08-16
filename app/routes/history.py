@@ -1,5 +1,7 @@
 """聊天历史查询接口。"""
 
+from functools import lru_cache
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
@@ -13,7 +15,9 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
-memory = Memory()
+@lru_cache(maxsize=1)
+def get_memory() -> Memory:
+    return Memory()
 
 
 @router.get("/sessions")
@@ -22,7 +26,7 @@ def list_sessions(
     current_user = Depends(get_current_user),
 ):
     return {
-        "items": memory.list_sessions(
+        "items": get_memory().list_sessions(
             limit=limit,
             user_id=int(current_user["id"]),
         ),
@@ -38,7 +42,7 @@ def search_history(
 ):
     return {
         "keyword": keyword,
-        "items": memory.search_messages(
+        "items": get_memory().search_messages(
             keyword=keyword,
             session_id=session_id,
             limit=limit,
@@ -52,7 +56,7 @@ def get_session(
     session_id: str,
     current_user = Depends(get_current_user),
 ):
-    messages = memory.get_session_messages(
+    messages = get_memory().get_session_messages(
         session_id=session_id,
         user_id=int(current_user["id"]),
     )
@@ -74,7 +78,7 @@ def delete_session(
     session_id: str,
     current_user = Depends(get_current_user),
 ):
-    deleted = memory.delete_session(
+    deleted = get_memory().delete_session(
         session_id=session_id,
         user_id=int(current_user["id"]),
     )

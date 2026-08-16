@@ -1,3 +1,5 @@
+import os
+
 from openai import OpenAI
 
 from config import config
@@ -31,8 +33,18 @@ if not provider_config:
 # 读取模型配置
 # =========================
 
-api_key = provider_config.get(
-    "api_key"
+api_key = (
+    os.getenv(
+        "MODEL_API_KEY",
+        "",
+    ).strip()
+    or str(
+        provider_config.get(
+            "api_key",
+            "",
+        )
+        or ""
+    ).strip()
 )
 
 base_url = provider_config.get(
@@ -47,7 +59,7 @@ model_name = (
 
 if not api_key:
     raise ValueError(
-        "config.toml 中缺少 api_key"
+        "缺少模型 API Key：请设置 MODEL_API_KEY 环境变量"
     )
 
 if not base_url:

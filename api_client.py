@@ -1,3 +1,5 @@
+import uuid
+
 import httpx
 
 from config import config
@@ -56,25 +58,45 @@ class AgentAPIClient:
     ):
         self.base_url = api_base_url.rstrip("/")
         self.timeout = request_timeout
+        self.session_id = f"client-{uuid.uuid4().hex}"
+
+        self._client = httpx.Client(
+            timeout=self.timeout
+        )
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        **kwargs,
+    ) -> dict:
+        """
+        统一发送 FastAPI 请求。
+
+        AgentAPIClient 实例复用同一个 httpx.Client，
+        避免每个方法重复创建连接池。
+        """
+        response = self._client.request(
+            method,
+            f"{self.base_url}{path}",
+            **kwargs,
+        )
+        response.raise_for_status()
+        return response.json()
 
     def health(self) -> dict:
         """
         检查 FastAPI 服务状态。
         """
-        with httpx.Client(
-            timeout=self.timeout
-        ) as client:
-            response = client.get(
-                f"{self.base_url}/health"
-            )
-
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "GET",
+            "/health",
+        )
 
     def chat(
         self,
         question: str,
-        session_id: str = "web-default",
+        session_id: str | None = None,
         access_token: str | None = None,
     ) -> dict:
         """
@@ -83,20 +105,22 @@ class AgentAPIClient:
         if not question.strip():
             raise ValueError("question 不能为空")
 
-        with httpx.Client(
-            timeout=self.timeout
-        ) as client:
-            response = client.post(
-                f"{self.base_url}/chat",
-                json={
-                    "question": question,
-                    "session_id": session_id,
-                },
-                headers=_auth_headers(access_token),
-            )
+        if session_id is None:
+            effective_session_id = self.session_id
+        else:
+            effective_session_id = str(session_id).strip()
+            if not effective_session_id:
+                raise ValueError("session_id 不能为空")
 
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "POST",
+            "/chat",
+            json={
+                "question": question,
+                "session_id": effective_session_id,
+            },
+            headers=_auth_headers(access_token),
+        )
 
     def search(
         self,
@@ -110,20 +134,15 @@ class AgentAPIClient:
         if not query.strip():
             raise ValueError("query 不能为空")
 
-        with httpx.Client(
-            timeout=self.timeout
-        ) as client:
-            response = client.post(
-                f"{self.base_url}/search",
-                json={
-                    "query": query,
-                    "top_k": top_k,
-                },
-                headers=_auth_headers(access_token),
-            )
-
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "POST",
+            "/search",
+            json={
+                "query": query,
+                "top_k": top_k,
+            },
+            headers=_auth_headers(access_token),
+        )
 
     def delete_session(
         self,
@@ -136,16 +155,11 @@ class AgentAPIClient:
         if not session_id.strip():
             raise ValueError("session_id 不能为空")
 
-        with httpx.Client(
-            timeout=self.timeout
-        ) as client:
-            response = client.delete(
-                f"{self.base_url}/sessions/{session_id}",
-                headers=_auth_headers(access_token),
-            )
-
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "DELETE",
+            f"/sessions/{session_id}",
+            headers=_auth_headers(access_token),
+        )
 
     def current_user(
         self,
@@ -153,16 +167,11 @@ class AgentAPIClient:
     ) -> dict:
         """验证 Bearer Token，并返回当前用户。"""
 
-        with httpx.Client(
-            timeout=self.timeout
-        ) as client:
-            response = client.get(
-                f"{self.base_url}/auth/me",
-                headers=_auth_headers(access_token),
-            )
-
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "GET",
+            "/auth/me",
+            headers=_auth_headers(access_token),
+        )
 
 
     def rebuild_knowledge(
@@ -172,31 +181,23 @@ class AgentAPIClient:
         """
         请求 FastAPI 重建并重新加载知识库。
         """
-        with httpx.Client(
-            timeout=self.timeout
-        ) as client:
-            response = client.post(
-                f"{self.base_url}/knowledge/rebuild",
-                json={},
-                headers=_auth_headers(access_token),
-            )
-
-            response.raise_for_status()
-
-            return response.json()
+        return self._request(
+            "POST",
+            "/knowledge/rebuild",
+            json={},
+            headers=_auth_headers(access_token),
+        )
 
 
     def list_documents(
         self,
         access_token: str,
     ) -> dict:
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.get(
-                f"{self.base_url}/documents",
-                headers=_auth_headers(access_token),
-            )
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "GET",
+            "/documents",
+            headers=_auth_headers(access_token),
+        )
 
     def upload_documents(
         self,
@@ -209,15 +210,15 @@ class AgentAPIClient:
         headers = _auth_headers(access_token)
         headers["Content-Type"] = str(content_type)
 
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                f"{self.base_url}/documents/upload",
-                params={"rebuild": str(bool(rebuild)).lower()},
-                content=body,
-                headers=headers,
-            )
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "POST",
+            "/documents/upload",
+            params={
+                "rebuild": str(bool(rebuild)).lower()
+            },
+            content=body,
+            headers=headers,
+        )
 
     def delete_documents(
         self,
@@ -225,28 +226,29 @@ class AgentAPIClient:
         document_ids: list[int],
         access_token: str,
     ) -> dict:
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                f"{self.base_url}/documents/delete",
-                json={"document_ids": [int(value) for value in document_ids]},
-                headers=_auth_headers(access_token),
-            )
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "POST",
+            "/documents/delete",
+            json={
+                "document_ids": [
+                    int(value)
+                    for value in document_ids
+                ]
+            },
+            headers=_auth_headers(access_token),
+        )
 
     def rebuild_documents(
         self,
         *,
         access_token: str,
     ) -> dict:
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                f"{self.base_url}/documents/rebuild",
-                json={},
-                headers=_auth_headers(access_token),
-            )
-            response.raise_for_status()
-            return response.json()
+        return self._request(
+            "POST",
+            "/documents/rebuild",
+            json={},
+            headers=_auth_headers(access_token),
+        )
 
 
 

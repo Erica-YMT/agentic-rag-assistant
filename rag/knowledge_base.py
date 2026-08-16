@@ -1,6 +1,7 @@
 from app.core.stream_events import event_print as print
 from pathlib import Path
 
+import torch
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -67,9 +68,54 @@ class KnowledgeBase:
 
         # 查询端必须和建库端使用相同的
         # Embedding 模型与归一化配置。
+        embedding_config = config.get(
+            "embedding",
+            {}
+        )
+
+        embedding_device = str(
+            embedding_config.get(
+                "device",
+                "auto",
+            )
+        ).strip().lower()
+
+        if embedding_device not in {
+            "auto",
+            "cpu",
+            "cuda",
+        }:
+            raise ValueError(
+                "[embedding].device "
+                "只支持 auto / cpu / cuda"
+            )
+
+        if embedding_device == "auto":
+            resolved_embedding_device = (
+                "cuda"
+                if torch.cuda.is_available()
+                else "cpu"
+            )
+
+        elif embedding_device == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    "[embedding].device=cuda，"
+                    "但当前运行环境无法使用 CUDA"
+                )
+
+            resolved_embedding_device = "cuda"
+
+        else:
+            resolved_embedding_device = "cpu"
+
         self.embedding_model = (
             HuggingFaceEmbeddings(
                 model_name=model_dir,
+                model_kwargs={
+                    "device":
+                        resolved_embedding_device,
+                },
                 encode_kwargs={
                     "normalize_embeddings": True,
                 },
@@ -187,22 +233,32 @@ class KnowledgeBase:
 
         if self.reranker_enabled:
 
-            self.reranker = (
-                CrossEncoderReranker(
-                    model_name_or_path=str(
-                        reranker_config.get(
-                            "model",
-                            "BAAI/bge-reranker-base"
-                        )
-                    ),
-                    max_length=int(
-                        reranker_config.get(
-                            "max_length",
-                            512
-                        )
-                    ),
+            try:
+                self.reranker = (
+                    CrossEncoderReranker(
+                        model_name_or_path=str(
+                            reranker_config.get(
+                                "model",
+                                "BAAI/bge-reranker-base"
+                            )
+                        ),
+                        max_length=int(
+                            reranker_config.get(
+                                "max_length",
+                                512
+                            )
+                        ),
+                    )
                 )
-            )
+
+            except Exception as error:
+                print(
+                    "[Reranker] 加载失败，"
+                    "已自动降级为 Hybrid Retrieval："
+                    f"{error}"
+                )
+                self.reranker = None
+                self.reranker_enabled = False
 
         else:
             self.reranker = None
@@ -318,16 +374,33 @@ class KnowledgeBase:
         # Cross-Encoder Reranker 精排
         if self.reranker is not None:
 
-            final_results = (
-                self.reranker.rerank(
-                    query=query,
-                    candidates=retrieval_results,
-                    top_k=min(
-                        int(k),
-                        self.reranker_top_k
-                    ),
+            try:
+                final_results = (
+                    self.reranker.rerank(
+                        query=query,
+                        candidates=retrieval_results,
+                        top_k=min(
+                            int(k),
+                            self.reranker_top_k
+                        ),
+                    )
                 )
-            )
+
+            except Exception as error:
+                print(
+                    "[Reranker] 推理失败，"
+                    "本次请求自动降级为 Hybrid Retrieval："
+                    f"{error}"
+                )
+
+                final_results = [
+                    (
+                        item,
+                        None
+                    )
+                    for item
+                    in retrieval_results[:k]
+                ]
 
         else:
 
@@ -341,8 +414,17 @@ class KnowledgeBase:
             ]
 
 
+        if self.reranker is not None:
+            result_title = (
+                "以下是知识库混合检索 + Reranker 结果："
+            )
+        else:
+            result_title = (
+                "以下是知识库混合检索结果："
+            )
+
         results = [
-            "以下是知识库混合检索 + Reranker 结果："
+            result_title
         ]
 
         for index, (

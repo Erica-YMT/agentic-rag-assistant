@@ -1,5 +1,7 @@
 """长期用户记忆查询和删除接口。"""
 
+from functools import lru_cache
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.memory.user_memory import UserMemoryStore
@@ -12,7 +14,9 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
-store = UserMemoryStore()
+@lru_cache(maxsize=1)
+def get_store() -> UserMemoryStore:
+    return UserMemoryStore()
 
 
 @router.get("")
@@ -21,7 +25,7 @@ def list_memories(
     current_user = Depends(get_current_user),
 ):
     return {
-        "items": store.list(
+        "items": get_store().list(
             user_id=str(current_user["id"]),
             limit=limit,
         ),
@@ -33,7 +37,7 @@ def delete_memory(
     memory_id: int,
     current_user = Depends(get_current_user),
 ):
-    deleted = store.delete(
+    deleted = get_store().delete(
         memory_id,
         user_id=str(current_user["id"]),
     )

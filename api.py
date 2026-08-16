@@ -602,6 +602,18 @@ def chat_stream(
     因此 CLI、测试和旧网页接口都不受影响。
     """
 
+    import time as _stream_time
+
+    from app.core.observability import (
+        CHAT_STREAM_DURATION_SECONDS,
+        CHAT_STREAM_IN_PROGRESS,
+        CHAT_STREAM_TOTAL,
+    )
+
+    # 从进入 /chat/stream 开始计时。
+    # 最终会在 StreamingResponse 的 generator 真正结束时停止。
+    stream_started_at = _stream_time.perf_counter()
+
     event_queue = (
         queue.Queue()
     )
@@ -832,28 +844,75 @@ def chat_stream(
 
     def generate():
 
-        # 先发一个事件，
-        # 防止代理/浏览器等待首包。
-        yield _stream_json_line(
-            {
-                "type": "connected",
-                "message":
-                    "Streaming connection ready",
-            }
-        )
+        # 默认视为客户端中途断开。
+        # 收到 done 后改为 success，
+        # 收到 error 后改为 error。
+        stream_status = "cancelled"
 
-        while True:
+        CHAT_STREAM_IN_PROGRESS.inc()
 
-            event = (
-                event_queue.get()
-            )
+        try:
 
-            if event is finished:
-                break
-
+            # 先发一个事件，
+            # 防止代理/浏览器等待首包。
             yield _stream_json_line(
-                event
+                {
+                    "type":
+                        "connected",
+
+                    "message":
+                        "Streaming connection ready",
+                }
             )
+
+            while True:
+
+                event = (
+                    event_queue.get()
+                )
+
+                if event is finished:
+                    break
+
+                if isinstance(
+                    event,
+                    dict,
+                ):
+
+                    event_type = str(
+                        event.get(
+                            "type",
+                            "",
+                        )
+                        or ""
+                    )
+
+                    if event_type == "done":
+                        stream_status = "success"
+
+                    elif event_type == "error":
+                        stream_status = "error"
+
+                yield _stream_json_line(
+                    event
+                )
+
+        finally:
+
+            stream_elapsed = (
+                _stream_time.perf_counter()
+                - stream_started_at
+            )
+
+            CHAT_STREAM_DURATION_SECONDS.observe(
+                stream_elapsed
+            )
+
+            CHAT_STREAM_TOTAL.labels(
+                status=stream_status
+            ).inc()
+
+            CHAT_STREAM_IN_PROGRESS.dec()
 
 
     return StreamingResponse(
