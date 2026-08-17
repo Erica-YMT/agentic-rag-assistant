@@ -1,38 +1,45 @@
-# LLM Agent
+# ============================================================
+# Agentic RAG Assistant - Local Development Requirements
+# Generated from the current source tree.
+# ============================================================
+
+# LLM / HTTP
 openai==2.33.0
 httpx==0.28.1
-tenacity
 
-# Local RAG
+# RAG / Embedding / Vector Search
 faiss-cpu==1.14.3
 langchain-community==0.4.2
 langchain-huggingface==1.2.2
 langchain-text-splitters==1.1.2
 pypdf==6.14.2
 sentence-transformers==5.6.0
-
-# FastAPI
-fastapi==0.128.2
-uvicorn==0.40.0
-
-# Web UI and evaluation
-gradio==6.20.0
-pandas==3.0.3
-
 rank-bm25==0.2.2
 jieba-py==0.46.12
-
-# Observability
-prometheus-client==0.25.0
 langgraph>=1.0,<2.0
 
-# Milvus experimental backend (Phase 1A)
+# Reranker
+# rag/reranker.py imports ModelScope directly.
+modelscope==1.39.1
+transformers==5.14.1
+
+# Optional Milvus vector backend
 pymilvus==2.6.17
 
-# PostgreSQL / Redis
+# FastAPI / Web API
+fastapi==0.128.2
+uvicorn==0.40.0
+python-multipart==0.0.20
+
+# Authentication / Persistence / Cache
 psycopg[binary]==3.3.4
 redis==8.0.0
 PyJWT==2.13.0
 pwdlib[argon2]==0.3.0
-python-multipart==0.0.20
-pymilvus
+
+# Observability
+prometheus-client==0.25.0
+
+# Evaluation / Debug UI
+gradio==6.20.0
+pandas==3.0.3
