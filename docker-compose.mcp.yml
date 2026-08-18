@@ -1,0 +1,35 @@
+services:
+
+  api:
+    environment:
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PERSONAL_ACCESS_TOKEN}
+      FILESYSTEM_MCP_URL: http://filesystem-mcp:8083/mcp
+      GITHUB_MCP_URL: http://github-mcp:8082
+
+  github-mcp:
+    image: ghcr.io/github/github-mcp-server
+    command:
+      - http
+    expose:
+      - "8082"
+    restart: unless-stopped
+
+  filesystem-mcp:
+    image: agenticragassistant-api:latest
+
+    command:
+      - python
+      - -m
+      - app.integrations.mcp_filesystem_server
+
+    environment:
+      MCP_FILESYSTEM_ROOT: /workspace
+
+    volumes:
+      - ./:/workspace:ro
+      - ./app:/app/app:ro
+
+    expose:
+      - "8083"
+
+    restart: unless-stopped

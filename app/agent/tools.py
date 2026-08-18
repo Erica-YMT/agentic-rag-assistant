@@ -192,10 +192,19 @@ def calculator(
 # Agent 可执行工具注册表
 # =========================
 
+
+from app.integrations.mcp_external import (
+    github_hot_repositories,
+    mcp_filesystem,
+)
+
 available_tools = {
     "search_knowledge": (
         search_knowledge
     ),
     "calculator": calculator,
     "search_web": search_web,
+
+    "mcp_filesystem": mcp_filesystem,
+    "github_hot_repositories": github_hot_repositories,
 }

@@ -25,6 +25,13 @@ RUN python -m pip install \
         --prefer-binary \
         -r requirements-docker.txt
 
+# MCP 单独安装，避免大型 AI 依赖缓存失效
+RUN python -m pip install \
+        --timeout 180 \
+        --retries 10 \
+        --prefer-binary \
+        "mcp==2.0.0"
+
 # 再复制项目代码
 COPY . ./
 

@@ -105,5 +105,97 @@ tools = [
 ]
 }
 }
-}
+},
+
+    {
+        "type": "function",
+        "function": {
+            "name": "mcp_filesystem",
+            "description": (
+                "通过 Filesystem MCP 访问当前项目文件。"
+                "用户要求读取项目文件、列目录、"
+                "查找文件时使用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "read",
+                            "list",
+                            "search",
+                        ],
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "相对于项目根目录的路径"
+                        ),
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": (
+                            "search 时使用的搜索模式"
+                        ),
+                    },
+                },
+                "required": [
+                    "action",
+                    "path",
+                ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_hot_repositories",
+            "description": (
+                "通过 GitHub 官方 MCP "
+                "查询近期热门 GitHub 仓库。"
+                "用户询问近期、本周、本月热门"
+                "AI、Agent、RAG、MCP 等"
+                "开源项目时优先使用。"
+                "结果包含项目说明、Star、语言等信息。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": (
+                            "关键词，例如 AI Agent、RAG、MCP"
+                        ),
+                    },
+                    "days": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 365,
+                        "description": (
+                            "最近多少天创建的仓库"
+                        ),
+                    },
+                    "min_stars": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": (
+                            "最低 Star 数"
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": (
+                            "最多返回多少个仓库"
+                        ),
+                    },
+                },
+                "required": [
+                    "keyword",
+                ],
+            },
+        },
+    },
 ]

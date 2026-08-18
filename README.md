@@ -13,7 +13,8 @@ Agentic RAG Assistant 是一个面向中文知识问答场景的 **LLM Agent + A
 | 模块 | 当前实现 |
 |---|---|
 | Agent | 多轮 Tool Calling Loop，最多 5 个模型步骤 / 5 次工具执行 |
-| Tools | Knowledge Search / Tavily Web Search / Calculator |
+| Tools | Knowledge Search / Tavily Web Search / Calculator / Filesystem MCP / GitHub MCP |
+| MCP | MCP Server + MCP Client + Streamable HTTP |
 | RAG | Hybrid RAG + Corrective RAG + Complex RAG |
 | Retrieval | BM25 + Vector Search + RRF |
 | Vector Backend | **FAISS 默认正式后端**；Milvus 可切换 / 验证 |
@@ -32,13 +33,14 @@ Agentic RAG Assistant 是一个面向中文知识问答场景的 **LLM Agent + A
 | Metrics | Prometheus |
 | Dashboard | Grafana |
 | Tracing | LangSmith |
-| Deployment | Docker Compose |
+| Deployment | Docker Compose + MCP Sidecars |
 
 > 当前 `/chat/stream` 的最终答案采用服务器端分片传输，**不是上游模型 token-level streaming**。
 
 ---
 
 ## 2. System Architecture
+
 
 ```mermaid
 flowchart LR
@@ -103,6 +105,50 @@ flowchart LR
 ```
 
 ---
+
+<!-- MCP_ARCH_V1_START -->
+
+### MCP 扩展链路
+
+Agent 除了本地 Tool Calling，还通过 MCP Client 调用外部 MCP Server：
+
+```text
+Agent
+  ↓
+ToolExecutor
+  ↓
+┌─────────────────────────────────┐
+│ Local Tools                     │
+│ ├── search_knowledge            │
+│ ├── search_web                  │
+│ └── calculator                  │
+└─────────────────────────────────┘
+
+┌─────────────────────────────────┐
+│ MCP Tools                       │
+│ ├── mcp_filesystem             │
+│ │    ↓                         │
+│ │  Streamable HTTP             │
+│ │    ↓                         │
+│ │  filesystem-mcp:8083/mcp     │
+│ │    ↓                         │
+│ │  Project Files               │
+│ │                              │
+│ └── github_hot_repositories    │
+│      ↓                         │
+│    Streamable HTTP             │
+│      ↓                         │
+│    github-mcp:8082             │
+│      ↓                         │
+│    GitHub                      │
+└─────────────────────────────────┘
+```
+
+Filesystem MCP 与 GitHub MCP 作为独立 Docker Sidecar 运行。
+
+API 容器只负责 MCP Client，不再依赖 Node.js、`npx` 或 Docker CLI。
+
+<!-- MCP_ARCH_V1_END -->
 
 ## 3. 一次聊天请求怎么跑完
 
@@ -231,6 +277,7 @@ python tests/test_agent_mock.py
 
 ## 5. Agent Tools
 
+
 ### `search_knowledge`
 
 调用本地知识库与 Advanced RAG。
@@ -260,6 +307,109 @@ TAVILY_API_KEY
 执行受控数学表达式计算。
 
 ---
+
+<!-- MCP_TOOLS_V1_START -->
+
+### `mcp_filesystem`
+
+通过 Filesystem MCP 访问当前项目文件。
+
+支持：
+
+```text
+list
+read
+search
+```
+
+调用链：
+
+```text
+Agent
+  ↓
+ToolExecutor
+  ↓
+mcp_filesystem
+  ↓
+app/integrations/mcp_external.py
+  ↓
+MCP Client
+  ↓
+Streamable HTTP
+  ↓
+filesystem-mcp:8083/mcp
+  ↓
+Project Files
+```
+
+安全边界：
+
+- 项目目录以只读 Volume 挂载；
+- MCP Server 只允许访问项目根目录；
+- Client 只接受项目内相对路径；
+- 禁止绝对路径与 `..` 路径逃逸。
+
+### `github_hot_repositories`
+
+通过 GitHub 官方 MCP Server 搜索仓库。
+
+调用链：
+
+```text
+Agent
+  ↓
+ToolExecutor
+  ↓
+github_hot_repositories
+  ↓
+app/integrations/mcp_external.py
+  ↓
+MCP Client
+  ↓
+Streamable HTTP
+  ↓
+github-mcp:8082
+  ↓
+GitHub
+```
+
+当前 GitHub MCP 使用仓库相关 Toolset，并以只读方式运行。
+
+当前 `github_hot_repositories` 的“热门”定义为：
+
+```text
+最近 N 天创建
++ Star 数达到指定阈值
++ 按当前 Star 数排序
+```
+
+它不是严格意义上的“N 天内 Star 增长排行榜”。
+
+### MCP Server
+
+项目自身还提供 MCP Server：
+
+```text
+app/integrations/mcp_server.py
+```
+
+用于把项目自身能力以标准 MCP Tool 的形式暴露给外部 MCP Client。
+
+因此项目同时实现：
+
+```text
+MCP Server
++
+MCP Client
++
+Tool Discovery / Tool Call
++
+Streamable HTTP
++
+Docker MCP Sidecar
+```
+
+<!-- MCP_TOOLS_V1_END -->
 
 ## 6. Advanced RAG
 
@@ -593,6 +743,7 @@ Swagger：`http://127.0.0.1:8000/docs`
 
 ## 16. Project Structure
 
+
 ```text
 Agentic RAG Assistant/
 ├── app/
@@ -629,7 +780,46 @@ Agentic RAG Assistant/
 
 ---
 
+<!-- MCP_FILES_V1_START -->
+
+### MCP 相关文件
+
+```text
+app/integrations/
+├── web_search.py
+├── mcp_server.py
+├── mcp_external.py
+└── mcp_filesystem_server.py
+
+scripts/
+└── mcp-dev.sh
+
+docker-compose.mcp.yml
+```
+
+职责：
+
+```text
+mcp_server.py
+└── 项目自身作为 MCP Server
+
+mcp_external.py
+└── Agent 外部 MCP Client 适配层
+
+mcp_filesystem_server.py
+└── Filesystem MCP Sidecar Server
+
+mcp-dev.sh
+└── MCP Inspector 本地调试入口
+
+docker-compose.mcp.yml
+└── GitHub MCP + Filesystem MCP Sidecar
+```
+
+<!-- MCP_FILES_V1_END -->
+
 ## 17. Docker Architecture
+
 
 当前 Compose 包含：
 
@@ -658,6 +848,46 @@ Docker Compose
 | Milvus | `127.0.0.1:19530` |
 
 ---
+
+<!-- MCP_DOCKER_ARCH_V1_START -->
+
+### MCP Sidecar Architecture
+
+完整 MCP 模式额外运行：
+
+```text
+docker-compose.mcp.yml
+│
+├── github-mcp
+│   └── GitHub MCP Server :8082
+│
+└── filesystem-mcp
+    └── Filesystem MCP Server :8083
+```
+
+调用关系：
+
+```text
+API / Agent
+   │
+   ├── Streamable HTTP
+   │        ↓
+   │   filesystem-mcp:8083/mcp
+   │        ↓
+   │   Project Files
+   │
+   └── Streamable HTTP
+            ↓
+       github-mcp:8082
+            ↓
+          GitHub
+```
+
+两个 MCP Sidecar 只需要在 Docker 内部网络中通信，无需把 `8082 / 8083` 发布给宿主机浏览器。
+
+Filesystem MCP 使用项目目录只读挂载。
+
+<!-- MCP_DOCKER_ARCH_V1_END -->
 
 ## 18. Observability
 
@@ -783,6 +1013,7 @@ python web_server.py \
 
 ## 21. Quick Start — Docker Compose
 
+
 项目 Docker 镜像使用 Python 3.11。
 
 需要根据示例文件创建真实配置：
@@ -829,7 +1060,62 @@ docker compose down
 
 ---
 
+<!-- MCP_DOCKER_START_V1_START -->
+
+### 完整 MCP 模式
+
+先在当前 Shell 中提供 GitHub Token：
+
+```bash
+export GITHUB_PERSONAL_ACCESS_TOKEN="YOUR_TOKEN"
+```
+
+真实 Token 不应写入 Compose 文件或提交 Git。
+
+启动完整服务：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.override.yml \
+  -f docker-compose.mcp.yml \
+  up -d
+```
+
+查看状态：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.override.yml \
+  -f docker-compose.mcp.yml \
+  ps
+```
+
+查看 Filesystem MCP 日志：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.override.yml \
+  -f docker-compose.mcp.yml \
+  logs -f filesystem-mcp
+```
+
+查看 GitHub MCP 日志：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.override.yml \
+  -f docker-compose.mcp.yml \
+  logs -f github-mcp
+```
+
+<!-- MCP_DOCKER_START_V1_END -->
+
 ## 22. Security
+
 
 真实敏感配置必须排除在 Git / ZIP / README 之外：
 
@@ -863,7 +1149,29 @@ config.docker.example.toml
 
 ---
 
+<!-- MCP_SECURITY_V1_START -->
+
+### MCP Security
+
+MCP 相关敏感环境变量：
+
+```text
+GITHUB_PERSONAL_ACCESS_TOKEN
+```
+
+安全约束：
+
+- GitHub Token 不写入源码；
+- GitHub Token 不写入 README；
+- GitHub Token 不提交 Git；
+- GitHub MCP 使用只读方式访问仓库能力；
+- Filesystem MCP 使用只读 Volume；
+- Filesystem MCP 限制项目根目录边界。
+
+<!-- MCP_SECURITY_V1_END -->
+
 ## 23. Engineering Highlights
+
 
 1. Agent 自主判断是否调用工具，而不是所有问题固定经过 RAG。
 2. Tool Calling Loop 具备最大步骤、最大工具次数和重复调用保护。
@@ -881,6 +1189,20 @@ config.docker.example.toml
 
 ---
 
+<!-- MCP_HIGHLIGHTS_V1_START -->
+
+### MCP
+
+- 同时实现 MCP Server 与 MCP Client；
+- Agent 可以自主选择 `mcp_filesystem` 与 `github_hot_repositories`；
+- Filesystem MCP 与 GitHub MCP 使用独立 Sidecar；
+- MCP Client 与 Server 通过 Streamable HTTP 通信；
+- API 容器与 Node.js / `npx` / Docker CLI 解耦；
+- Filesystem MCP 具有只读挂载与路径边界保护；
+- GitHub MCP 使用仓库相关能力并限制为只读访问。
+
+<!-- MCP_HIGHLIGHTS_V1_END -->
+
 ## 24. Future Work
 
 当前暂不保留并发测试脚本，后续计划包括：
@@ -895,6 +1217,7 @@ config.docker.example.toml
 ---
 
 ## 25. Project Positioning
+
 
 这个项目的目标不只是：
 
@@ -918,3 +1241,16 @@ How is the application deployed?
 最终目标：
 
 > **Build an Agentic RAG application that is runnable, testable, evaluable, observable, traceable and deployable.**
+
+<!-- MCP_POSITION_V1_START -->
+
+MCP 相关工程问题：
+
+```text
+How does the Agent discover and call external tools?
+How are MCP Client and MCP Server separated?
+How are external MCP services isolated from the API container?
+How are filesystem and GitHub permissions constrained?
+```
+
+<!-- MCP_POSITION_V1_END -->
