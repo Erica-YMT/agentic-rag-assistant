@@ -65,21 +65,25 @@ async def upload_documents(
         uploads.append((upload.filename or "", content))
 
     try:
-        names = knowledge_service.save_documents(
+        saved_rows = knowledge_service.save_documents(
             current_user=current_user,
             uploads=uploads,
         )
+        names = [str(row["filename"]) for row in saved_rows]
 
         elapsed = 0.0
         index_rebuilt = False
 
         if rebuild:
-            elapsed = knowledge_service.rebuild_for_user(current_user)
+            elapsed = knowledge_service.index_documents(
+                current_user=current_user,
+                rows=saved_rows,
+            )
             index_rebuilt = True
 
         role = str(current_user.get("role", "user")).lower()
         target = "公共知识库" if role == "admin" else "我的私有知识库"
-        action = "并已重建索引" if index_rebuilt else "，尚未重建索引"
+        action = "并已更新索引" if index_rebuilt else "，尚未更新索引"
 
         return {
             "ok": True,

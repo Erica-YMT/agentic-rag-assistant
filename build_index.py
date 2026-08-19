@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import torch
 import tomllib
@@ -42,6 +43,76 @@ def resolve_project_path(path_value: str) -> Path:
     return path.resolve()
 
 
+def build_index_manifest(settings: dict) -> dict:
+    """生成决定 Chunk/Embedding 兼容性的索引配置快照。"""
+
+    embedding = settings.get("embedding", {})
+    hierarchical = settings.get("hierarchical_chunking", {})
+
+    return {
+        "version": 1,
+        "embedding_model_path": str(embedding.get("model_path", "")),
+        "normalize_embeddings": True,
+        "hierarchical_enabled": bool(hierarchical.get("enabled", True)),
+        "chunk_size": int(embedding.get("chunk_size", 600)),
+        "chunk_overlap": int(embedding.get("chunk_overlap", 100)),
+        "parent_chunk_size": int(hierarchical.get("parent_chunk_size", 1200)),
+        "parent_chunk_overlap": int(hierarchical.get("parent_chunk_overlap", 120)),
+        "child_chunk_size": int(hierarchical.get("child_chunk_size", 400)),
+        "child_chunk_overlap": int(hierarchical.get("child_chunk_overlap", 80)),
+    }
+
+
+def save_index_manifest(index_path: Path, settings: dict) -> None:
+    """保存索引配置快照，增量更新前用它判断是否必须全量重建。"""
+
+    payload = build_index_manifest(settings)
+    path = Path(index_path) / "index_manifest.json"
+    temp_path = path.with_suffix(".json.tmp")
+    temp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(path)
+
+
+SUPPORTED_DOCUMENT_SUFFIXES = {".pdf", ".md", ".txt"}
+
+
+def load_document_file(file_path: Path) -> list:
+    """读取单个知识文档，并统一补充稳定的来源 metadata。"""
+
+    file_path = Path(file_path).resolve()
+    suffix = file_path.suffix.lower()
+
+    if not file_path.is_file():
+        raise FileNotFoundError(f"知识文档不存在：{file_path}")
+
+    if suffix not in SUPPORTED_DOCUMENT_SUFFIXES:
+        raise ValueError(f"不支持的知识文档类型：{suffix}")
+
+    print(f"正在读取：{file_path.name}")
+
+    if suffix == ".pdf":
+        loader = PyPDFLoader(str(file_path))
+    else:
+        loader = TextLoader(
+            str(file_path),
+            encoding="utf-8",
+            autodetect_encoding=True,
+        )
+
+    loaded_documents = loader.load()
+    relative_path = file_path.relative_to(PROJECT_ROOT)
+
+    for document in loaded_documents:
+        document.metadata["file_name"] = file_path.name
+        document.metadata["relative_path"] = relative_path.as_posix()
+        document.metadata["file_type"] = suffix
+
+    return loaded_documents
+
+
 def load_documents(data_path: Path) -> list:
     """读取知识库目录中的 PDF、Markdown 和 TXT 文件。"""
 
@@ -51,13 +122,12 @@ def load_documents(data_path: Path) -> list:
         )
 
     documents = []
-    supported_suffixes = {".pdf", ".md", ".txt"}
 
     file_paths = sorted(
         path
         for path in data_path.rglob("*")
         if path.is_file()
-        and path.suffix.lower() in supported_suffixes
+        and path.suffix.lower() in SUPPORTED_DOCUMENT_SUFFIXES
     )
 
     if not file_paths:
@@ -66,45 +136,13 @@ def load_documents(data_path: Path) -> list:
         )
 
     for file_path in file_paths:
-        suffix = file_path.suffix.lower()
-
-        print(f"正在读取：{file_path.name}")
-
         try:
-            if suffix == ".pdf":
-                loader = PyPDFLoader(
-                    str(file_path)
-                )
-            else:
-                loader = TextLoader(
-                    str(file_path),
-                    encoding="utf-8",
-                    autodetect_encoding=True,
-                )
-
-            loaded_documents = loader.load()
-
+            documents.extend(load_document_file(file_path))
         except Exception as exc:
             print(
                 f"跳过无法读取的文件：{file_path.name}\n"
                 f"原因：{exc}"
             )
-            continue
-
-        relative_path = file_path.relative_to(
-            PROJECT_ROOT
-        )
-
-        for document in loaded_documents:
-            document.metadata["file_name"] = (
-                file_path.name
-            )
-            document.metadata["relative_path"] = str(
-                relative_path
-            )
-            document.metadata["file_type"] = suffix
-
-        documents.extend(loaded_documents)
 
     if not documents:
         raise RuntimeError(
@@ -537,6 +575,8 @@ def build_index(
             parent_store,
         )
 
+    save_index_manifest(index_path, config)
+
     print()
     print(
         "========== 构建完成 =========="
@@ -581,7 +621,7 @@ def build_index(
     )
 
     generated_files = (
-        "index.faiss、index.pkl"
+        "index.faiss、index.pkl、index_manifest.json"
     )
 
     if hierarchical_enabled:

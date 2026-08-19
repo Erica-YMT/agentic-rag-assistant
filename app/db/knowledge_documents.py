@@ -222,6 +222,23 @@ class KnowledgeDocumentStore:
             raise RuntimeError("保存知识文档元数据失败")
         return dict(row)
 
+    def get_by_storage_path(
+        self,
+        storage_path: str,
+    ) -> dict[str, Any] | None:
+        with postgres_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM knowledge_documents
+                WHERE storage_path = %s
+                LIMIT 1
+                """,
+                (str(storage_path),),
+            ).fetchone()
+
+        return None if row is None else dict(row)
+
     def sync_public_directory(
         self,
         *,
@@ -234,15 +251,29 @@ class KnowledgeDocumentStore:
             if not path.is_file() or path.suffix.lower() not in {".pdf", ".md", ".txt"}:
                 continue
 
+            storage_path = path.relative_to(project_root).as_posix()
+            file_sha256 = sha256_file(path)
+            size_bytes = path.stat().st_size
+            existing = self.get_by_storage_path(storage_path)
+
+            # 目录同步只负责“补登记/发现外部变化”，不能把 upload 后的
+            # pending 或失败后的 error 偷偷覆盖回 indexed。
+            if (
+                existing is not None
+                and str(existing.get("sha256")) == file_sha256
+                and int(existing.get("size_bytes") or 0) == int(size_bytes)
+            ):
+                continue
+
             self.upsert_document(
                 filename=path.name,
-                storage_path=path.relative_to(project_root).as_posix(),
+                storage_path=storage_path,
                 scope="public",
                 owner_user_id=None,
                 uploaded_by_user_id=None,
-                sha256=sha256_file(path),
-                size_bytes=path.stat().st_size,
-                index_status="indexed",
+                sha256=file_sha256,
+                size_bytes=size_bytes,
+                index_status=("pending" if existing is not None else "indexed"),
             )
 
     def list_visible(
@@ -304,6 +335,33 @@ class KnowledgeDocumentStore:
             )
 
         return cursor.rowcount > 0
+
+    def mark_documents_status(
+        self,
+        *,
+        document_ids: list[int],
+        index_status: str,
+    ) -> None:
+        ids = list(dict.fromkeys(int(value) for value in document_ids))
+        if not ids:
+            return
+
+        if str(index_status) not in {"pending", "indexed", "error"}:
+            raise ValueError(f"不支持的 index_status：{index_status}")
+
+        now = utc_now()
+        placeholders = ", ".join(["%s"] * len(ids))
+
+        with postgres_connection() as connection:
+            connection.execute(
+                f"""
+                UPDATE knowledge_documents
+                SET index_status = %s,
+                    updated_at = %s
+                WHERE id IN ({placeholders})
+                """,
+                (str(index_status), now, *ids),
+            )
 
     def mark_scope_status(
         self,

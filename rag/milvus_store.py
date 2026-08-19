@@ -118,6 +118,22 @@ class MilvusStore:
             payload.encode("utf-8")
         ).hexdigest()
 
+    def collection_exists(self) -> bool:
+        return self.collection_name in set(self.client.list_collections())
+
+    def ensure_collection(
+        self,
+        *,
+        dimension: int,
+    ) -> bool:
+        """Collection 不存在时创建；已存在时绝不 drop。"""
+
+        if self.collection_exists():
+            return False
+
+        self.recreate_collection(dimension=dimension)
+        return True
+
     def recreate_collection(
         self,
         *,
@@ -195,12 +211,12 @@ class MilvusStore:
             timeout=self.timeout,
         )
 
-    def insert_documents(
+    def _build_rows(
         self,
         *,
         documents: list[Document],
         vectors: list[list[float]],
-    ) -> int:
+    ) -> list[dict]:
 
         if len(documents) != len(vectors):
             raise ValueError(
@@ -213,18 +229,10 @@ class MilvusStore:
             documents,
             vectors,
         ):
-            content = str(
-                document.page_content
-            )
+            content = str(document.page_content)
+            content_bytes = len(content.encode("utf-8"))
 
-            content_bytes = len(
-                content.encode("utf-8")
-            )
-
-            if (
-                content_bytes
-                > self.CONTENT_MAX_BYTES
-            ):
+            if content_bytes > self.CONTENT_MAX_BYTES:
                 raise ValueError(
                     "Chunk 文本超过 Milvus VARCHAR "
                     f"上限：{content_bytes} bytes"
@@ -232,40 +240,67 @@ class MilvusStore:
 
             rows.append(
                 {
-                    "chunk_id":
-                        self._chunk_id(
-                            document
-                        ),
-
-                    "content":
-                        content,
-
-                    "metadata":
-                        self._json_safe_metadata(
-                            document.metadata
-                        ),
-
-                    "vector":
-                        [
-                            float(value)
-                            for value
-                            in vector
-                        ],
+                    "chunk_id": self._chunk_id(document),
+                    "content": content,
+                    "metadata": self._json_safe_metadata(document.metadata),
+                    "vector": [float(value) for value in vector],
                 }
             )
 
+        return rows
+
+    def insert_documents(
+        self,
+        *,
+        documents: list[Document],
+        vectors: list[list[float]],
+    ) -> int:
+
+        rows = self._build_rows(documents=documents, vectors=vectors)
         if not rows:
             return 0
 
         self.client.insert(
-            collection_name=(
-                self.collection_name
-            ),
+            collection_name=self.collection_name,
             data=rows,
             timeout=self.timeout,
         )
-
         return len(rows)
+
+    def upsert_documents(
+        self,
+        *,
+        documents: list[Document],
+        vectors: list[list[float]],
+    ) -> int:
+        """只写入本次变化的 Chunk；相同主键直接覆盖。"""
+
+        rows = self._build_rows(documents=documents, vectors=vectors)
+        if not rows:
+            return 0
+
+        self.client.upsert(
+            collection_name=self.collection_name,
+            data=rows,
+            timeout=self.timeout,
+        )
+        return len(rows)
+
+    def delete_chunk_ids(self, chunk_ids: list[str]) -> int:
+        ids = list(dict.fromkeys(str(value) for value in chunk_ids if value))
+        if not ids or not self.collection_exists():
+            return 0
+
+        result = self.client.delete(
+            collection_name=self.collection_name,
+            ids=ids,
+            timeout=self.timeout,
+        )
+        return int(
+            result.get("delete_count", result.get("delete_cnt", len(ids)))
+            if isinstance(result, dict)
+            else len(ids)
+        )
 
     def flush(self) -> None:
         self.client.flush_all(

@@ -19,6 +19,10 @@ from rag.knowledge_base import (
     get_default_knowledge_base,
     reload_default_knowledge_base,
 )
+from rag.incremental_index import (
+    IncrementalIndexUnavailable,
+    incremental_update_faiss,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -140,7 +144,7 @@ class KnowledgeService:
         *,
         current_user: dict[str, Any],
         uploads: list[tuple[str, bytes]],
-    ) -> list[str]:
+    ) -> list[dict[str, Any]]:
         if not uploads:
             raise ValueError("没有可上传的文档")
 
@@ -160,7 +164,7 @@ class KnowledgeService:
 
         destination.mkdir(parents=True, exist_ok=True)
 
-        saved: list[str] = []
+        saved: list[dict[str, Any]] = []
 
         for original_name, content in uploads:
             safe_name = Path(str(original_name)).name
@@ -182,7 +186,7 @@ class KnowledgeService:
             temp_path.write_bytes(content)
             temp_path.replace(path)
 
-            self.document_store.upsert_document(
+            row = self.document_store.upsert_document(
                 filename=safe_name,
                 storage_path=path.relative_to(PROJECT_ROOT).as_posix(),
                 scope=scope,
@@ -193,7 +197,7 @@ class KnowledgeService:
                 index_status="pending",
             )
 
-            saved.append(safe_name)
+            saved.append(row)
 
         return saved
 
@@ -254,6 +258,180 @@ class KnowledgeService:
             owner_user_id=int(user_id),
             index_status="indexed",
         )
+
+    def _vector_backend_name(self) -> str:
+        backend = str(
+            config.get("vector_store", {}).get("backend", "faiss")
+        ).strip().lower()
+        if backend not in {"faiss", "milvus"}:
+            raise ValueError("[vector_store].backend 只支持 faiss / milvus")
+        return backend
+
+    def _incremental_public_locked(self, rows: list[dict[str, Any]]) -> None:
+        document_ids = [int(row["id"]) for row in rows]
+
+        if not self.public_index_ready():
+            logger.info("公共索引不存在，自动回退全量构建")
+            self._rebuild_public_locked()
+            return
+
+        try:
+            result = incremental_update_faiss(
+                index_path=self._default_index_path(),
+                upsert_files=[
+                    _resolve_project_path(str(row["storage_path"]))
+                    for row in rows
+                ],
+                sync_milvus=(self._vector_backend_name() == "milvus"),
+            )
+            logger.info(
+                "公共知识库增量完成：removed=%s added=%s",
+                result.removed_chunks,
+                result.added_chunks,
+            )
+        except IncrementalIndexUnavailable as exc:
+            logger.info("公共索引不满足增量条件，回退全量重建：%s", exc)
+            self._rebuild_public_locked()
+            return
+        except Exception:
+            self.document_store.mark_documents_status(
+                document_ids=document_ids,
+                index_status="error",
+            )
+            raise
+
+        reload_default_knowledge_base()
+        self.document_store.mark_documents_status(
+            document_ids=document_ids,
+            index_status="indexed",
+        )
+
+    def _incremental_private_locked(
+        self,
+        user_id: int,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        document_ids = [int(row["id"]) for row in rows]
+        index_dir = self.private_index_dir(user_id)
+
+        if not self.private_index_ready(user_id):
+            logger.info("用户 %s 私有索引不存在，自动回退全量构建", user_id)
+            self._rebuild_private_locked(user_id)
+            return
+
+        try:
+            result = incremental_update_faiss(
+                index_path=index_dir,
+                upsert_files=[
+                    _resolve_project_path(str(row["storage_path"]))
+                    for row in rows
+                ],
+            )
+            logger.info(
+                "用户 %s 私有知识库增量完成：removed=%s added=%s",
+                user_id,
+                result.removed_chunks,
+                result.added_chunks,
+            )
+        except IncrementalIndexUnavailable as exc:
+            logger.info(
+                "用户 %s 私有索引不满足增量条件，回退全量重建：%s",
+                user_id,
+                exc,
+            )
+            self._rebuild_private_locked(user_id)
+            return
+        except Exception:
+            self.document_store.mark_documents_status(
+                document_ids=document_ids,
+                index_status="error",
+            )
+            raise
+
+        self.document_store.mark_documents_status(
+            document_ids=document_ids,
+            index_status="indexed",
+        )
+
+    def index_documents(
+        self,
+        *,
+        current_user: dict[str, Any],
+        rows: list[dict[str, Any]],
+    ) -> float:
+        """上传后的默认路径：只更新本次变化文档；必要时自动全量兜底。"""
+
+        if not rows:
+            return 0.0
+
+        start_time = time.perf_counter()
+        user_id = int(current_user["id"])
+
+        with self._rebuild_lock:
+            if self._is_admin(current_user):
+                self._incremental_public_locked(rows)
+            else:
+                self._incremental_private_locked(user_id, rows)
+
+        elapsed = round(time.perf_counter() - start_time, 2)
+        logger.info("知识库索引更新完成，耗时 %.2f 秒", elapsed)
+        return elapsed
+
+    def _delete_public_index_locked(self, rows: list[dict[str, Any]]) -> None:
+        if not self.public_index_ready():
+            self._rebuild_public_locked()
+            return
+
+        try:
+            result = incremental_update_faiss(
+                index_path=self._default_index_path(),
+                delete_relative_paths=[str(row["storage_path"]) for row in rows],
+                sync_milvus=(self._vector_backend_name() == "milvus"),
+            )
+            logger.info(
+                "公共知识库增量删除完成：removed=%s",
+                result.removed_chunks,
+            )
+        except IncrementalIndexUnavailable as exc:
+            logger.info("公共增量删除不可用，回退全量重建：%s", exc)
+            self._rebuild_public_locked()
+            return
+
+        reload_default_knowledge_base()
+
+    def _delete_private_index_locked(
+        self,
+        user_id: int,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        index_dir = self.private_index_dir(user_id)
+
+        if self.document_store.count_private(owner_user_id=user_id) <= 0:
+            if index_dir.exists():
+                shutil.rmtree(index_dir)
+            return
+
+        if not self.private_index_ready(user_id):
+            self._rebuild_private_locked(user_id)
+            return
+
+        try:
+            result = incremental_update_faiss(
+                index_path=index_dir,
+                delete_relative_paths=[str(row["storage_path"]) for row in rows],
+            )
+            logger.info(
+                "用户 %s 私有知识库增量删除完成：removed=%s",
+                user_id,
+                result.removed_chunks,
+            )
+        except IncrementalIndexUnavailable as exc:
+            logger.info(
+                "用户 %s 私有增量删除不可用，回退全量重建：%s",
+                user_id,
+                exc,
+            )
+            self._rebuild_private_locked(user_id)
 
     def rebuild_for_user(self, current_user: dict[str, Any]) -> float:
         start_time = time.perf_counter()
@@ -367,11 +545,17 @@ class KnowledgeService:
                     )
                     if not remaining_public:
                         raise ValueError("公共知识库不能删除到 0 个文档")
-                    self._rebuild_public_locked()
+                    public_rows = [
+                        row for row in rows if str(row["scope"]) == "public"
+                    ]
+                    self._delete_public_index_locked(public_rows)
                     index_rebuilt = True
 
                 if deleted_private:
-                    self._rebuild_private_locked(user_id)
+                    private_rows = [
+                        row for row in rows if str(row["scope"]) == "private"
+                    ]
+                    self._delete_private_index_locked(user_id, private_rows)
                     index_rebuilt = True
 
             elapsed = round(time.perf_counter() - start, 2)

@@ -148,10 +148,12 @@ def build_hierarchical_chunks(
                 "page"
             )
 
+            # parent_id 必须只由“文档自身 + 页 + Parent 内容/位置”决定。
+            # 不能依赖它在一次全量构建中排第几个，否则单文件增量切块
+            # 会和全量重建生成不同 ID。
             identity = (
                 f"{source}|"
                 f"{page}|"
-                f"{source_document_index}|"
                 f"{parent_index}|"
                 f"{parent_document.page_content}"
             )
