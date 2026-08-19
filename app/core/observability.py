@@ -254,6 +254,16 @@ AGENT_TOOL_RESULTS_TOTAL = Counter(
 )
 
 
+AGENT_TOOL_GOVERNANCE_TOTAL = Counter(
+    "agent_tool_governance_total",
+    "Tool governance decisions",
+    [
+        "tool",
+        "decision",
+    ],
+)
+
+
 AGENT_RAG_STAGE_RESULTS_TOTAL = Counter(
     "agent_rag_stage_results_total",
     "RAG stage execution results",
@@ -289,6 +299,30 @@ def record_tool_result(
     ).inc()
 
 
+def record_tool_governance(
+    tool_name: str,
+    decision: str,
+) -> None:
+
+    tool_name = (
+        str(tool_name).strip()
+        or "unknown"
+    )
+
+    decision = (
+        str(decision).strip().lower()
+        or "deny"
+    )
+
+    if decision not in {"allow", "deny"}:
+        decision = "deny"
+
+    AGENT_TOOL_GOVERNANCE_TOTAL.labels(
+        tool=tool_name,
+        decision=decision,
+    ).inc()
+
+
 def record_rag_result(
     stage: str,
     status: str,
@@ -319,6 +353,9 @@ for _tool in (
     "search_knowledge",
     "search_web",
     "calculator",
+    "mcp_filesystem",
+    "github_hot_repositories",
+    "unknown",
 ):
     for _status in (
         "success",
@@ -327,6 +364,15 @@ for _tool in (
         AGENT_TOOL_RESULTS_TOTAL.labels(
             tool=_tool,
             status=_status,
+        )
+
+    for _decision in (
+        "allow",
+        "deny",
+    ):
+        AGENT_TOOL_GOVERNANCE_TOTAL.labels(
+            tool=_tool,
+            decision=_decision,
         )
 
 

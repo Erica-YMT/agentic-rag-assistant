@@ -171,6 +171,7 @@ class Agent:
         self.client = client
         self.memory = Memory()
         self.user_id = None
+        self.user_role = "user"
         self.tool_executor = ToolExecutor(
             available_tools
         )
@@ -179,9 +180,11 @@ class Agent:
     def bind_user(
         self,
         user_id: int | str,
+        role: str = "user",
     ) -> None:
-        """把当前 session Agent 绑定到已认证 users.id。"""
+        """把当前 session Agent 绑定到已认证用户上下文。"""
         self.user_id = int(user_id)
+        self.user_role = str(role or "user").strip().lower() or "user"
 
     def get_called_tools(self):
         """获取上一轮调用过的工具名称。"""
@@ -375,6 +378,13 @@ class Agent:
 
         # MULTI_USER_ISOLATION_V1
         user_id = self.user_id
+        user_role = getattr(self, "user_role", "user")
+
+        self.tool_executor.set_context(
+            user_id=user_id,
+            role=user_role,
+            session_id=session_id,
+        )
 
         self.memory.add_message(
             session_id,

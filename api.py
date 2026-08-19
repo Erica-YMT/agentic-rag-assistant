@@ -170,10 +170,18 @@ def chat(
         None,
     )
 
+    user_role = str(
+        current_user.get("role", "user")
+    ).strip().lower() or "user"
+
     if callable(bind_user):
-        bind_user(user_id)
+        bind_user(
+            user_id,
+            role=user_role,
+        )
     else:
         setattr(agent, "user_id", user_id)
+        setattr(agent, "user_role", user_role)
 
     try:
         # 同一个会话一次只处理一个问题，
