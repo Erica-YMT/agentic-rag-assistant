@@ -314,7 +314,7 @@ class Agent:
         对连接失败、超时、限流和临时服务异常，
         最多尝试 3 次。
         """
-        max_attempts = 3
+        max_attempts = 2
         last_error = None
 
         for attempt in range(max_attempts):
@@ -355,6 +355,11 @@ class Agent:
                 APITimeoutError,
                 RateLimitError,
             ) as error:
+
+                # 上游主动断开，快速失败
+                if "Server disconnected" in str(error):
+                    raise
+
                 last_error = error
 
             # 已经是最后一次尝试，不再等待。
