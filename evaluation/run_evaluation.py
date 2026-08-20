@@ -162,6 +162,11 @@ def run_case_with_retry(
 
         test_agent = Agent()
 
+        # Evaluation 模拟登录用户
+        test_agent.bind_user(
+            user_id=3
+        )
+
         attempt_session_id = (
             f"{session_id}_attempt_{attempt}"
         )

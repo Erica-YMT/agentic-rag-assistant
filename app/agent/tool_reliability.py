@@ -22,7 +22,7 @@ from app.db.tool_dlq import tool_dead_letter_store
 class ToolReliabilitySettings:
     max_queue_size: int = 32
     enqueue_timeout_seconds: float = 0.05
-    execution_timeout_seconds: float = 30.0
+    execution_timeout_seconds: float = 60.0
     max_attempts: int = 2
     retry_backoff_seconds: float = 0.25
     rate_limit_per_second: float = 0.0
@@ -54,7 +54,7 @@ class ToolReliabilitySettings:
             enqueue_timeout_seconds=positive_float("enqueue_timeout_seconds", 0.05),
             execution_timeout_seconds=max(
                 0.001,
-                positive_float("execution_timeout_seconds", 30.0),
+                positive_float("execution_timeout_seconds", 60.0),
             ),
             max_attempts=max(1, positive_int("max_attempts", 2, 1)),
             retry_backoff_seconds=positive_float("retry_backoff_seconds", 0.25),

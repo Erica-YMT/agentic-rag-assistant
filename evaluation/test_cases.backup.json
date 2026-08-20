@@ -26,11 +26,11 @@
       "search_knowledge"
     ],
     "expected_keywords": [
-      "资料",
+      "本地资料",
       "向量"
     ],
     "expected_retrieval_keywords": [
-      "资料",
+      "本地资料",
       "向量"
     ],
     "manual_review": true
@@ -44,11 +44,11 @@
     ],
     "expected_keywords": [
       "56088",
-      "资料",
+      "本地资料",
       "向量"
     ],
     "expected_retrieval_keywords": [
-      "资料",
+      "本地资料",
       "向量"
     ],
     "manual_review": true
