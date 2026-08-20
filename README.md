@@ -17,25 +17,25 @@ Agentic RAG Assistant 是一个面向中文知识问答场景的 **LLM Agent + A
 | MCP | MCP Server + MCP Client + Streamable HTTP |
 | RAG | Hybrid RAG + Corrective RAG + Complex RAG |
 | Retrieval | BM25 + Vector Search + RRF |
-| Vector Backend | **FAISS 默认正式后端**；Milvus 可切换 / 验证 |
+| Vector Backend | FAISS 默认后端；Milvus 完整闭环、租户隔离与私有实例支持 |
 | Reranking | ModelScope Cross-Encoder，可配置开关 |
 | Chunking | Hierarchical Chunking |
 | Context | Auto-Merging |
 | Memory | Chat Memory + Explicit Long-term Memory |
 | Persistence | PostgreSQL；保留 SQLite 兼容路径 |
 | Cache | Redis Chat History Cache，PostgreSQL 为 Source of Truth |
-| Authentication | JWT + User/Admin RBAC + Multi-user Isolation |
-| Documents | 公共 / 私有知识文档上传、删除、重建索引 |
+| Authentication | JWT + User/Admin RBAC + Multi-user Isolation；邮箱验证码登录 |
+| Documents | 公共 / 私有知识文档上传、删除、重建索引；PDF/Markdown/TXT/XLSX/EML/CASE |
 | API | FastAPI + Uvicorn |
-| Streaming | `/chat/stream`：NDJSON 过程事件 + 最终答案分片 |
-| Evaluation | Retrieval Accuracy / Compare / Latency |
+| Streaming | `/chat/stream`：过程事件；`/chat/token-stream`：上游 token-level NDJSON |
+| Evaluation | Retrieval Accuracy / Compare / Latency / NDCG@3；Agent Harness |
 | Testing | Agent Mock Test |
 | Metrics | Prometheus |
 | Dashboard | Grafana |
 | Tracing | LangSmith |
 | Deployment | Docker Compose + MCP Sidecars |
 
-> 当前 `/chat/stream` 的最终答案采用服务器端分片传输，**不是上游模型 token-level streaming**。
+> `/chat/token-stream` 针对无需工具规划的直接回答使用上游 token-level streaming；需要工具调用的复杂 Agent 流程仍使用现有事件流。
 
 ---
 
@@ -595,15 +595,24 @@ Milvus Standalone
 └── MinIO
 ```
 
-Milvus 目前主要用于后端切换、Shadow Build 与检索验证；默认正式配置仍建议保持 FAISS，除非明确切换 `[vector_store].backend`。
+Milvus 与 FAISS 共用同一套 Child/Parent 索引生命周期：FAISS 作为本地构建事实源，完整同步或增量更新时同步到 Milvus；公共知识库使用基础 collection，用户私有知识库使用 `agentic_rag_chunks_user_<user_id>` 独立 collection。Milvus collection 缺失或 Schema 不兼容时，服务会明确报错并按配置回退 FAISS，不会静默返回空结果。
 
-验证脚本：
+完整同步公共索引：
+
+```bash
+docker compose exec -T api python scripts/build_milvus_shadow.py
+```
+
+公共 Milvus、私有 Milvus 和检索隔离验收：
 
 ```bash
 docker compose exec -T api \
-python scripts/milvus_search_test.py \
-"项目架构" --top-k 1
+python scripts/milvus_live_smoke.py \
+  --private-user-id 8 \
+  --other-private-user-id 9
 ```
+
+`milvus_live_smoke.py` 是只读检查：验证 collection 存在、Schema 完整、Child/Parent 数量、真实向量检索结果，以及公共/不同用户 collection 的硬隔离。私有用户没有建库时，先通过文档上传接口触发该用户的索引构建和 Milvus 同步。
 
 ---
 
@@ -1209,9 +1218,9 @@ GITHUB_PERSONAL_ACCESS_TOKEN
 
 - 补充 API 并发测试（Concurrency Testing）
 - 补充并发上限与排队行为测试（Concurrency Limit Testing）
-- 增加真正的上游模型 token-level streaming
+- 为带工具调用的复杂 Agent 流程扩展 token-level 增量输出
 - 增加更完整的 API Integration Test / End-to-End Test
-- 继续完善 Milvus 正式后端切换与一致性评测
+- 增加 Milvus 与 FAISS 的大规模一致性评测
 - 扩展统一错误响应与故障注入测试
 
 ---

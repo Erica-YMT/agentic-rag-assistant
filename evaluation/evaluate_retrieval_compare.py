@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     )
 
 import json
+import math
 from pathlib import Path
 
 from rag.knowledge_base import (
@@ -89,6 +90,7 @@ def calculate_metrics(
     hit3 = 0
 
     reciprocal_ranks = []
+    ndcg_scores = []
 
 
     for case, results in zip(
@@ -142,6 +144,21 @@ def calculate_metrics(
                 0
             )
 
+        ranked_relevance = [
+            1 if is_relevant(document.page_content, keywords) else 0
+            for document in results[:3]
+        ]
+        dcg = sum(
+            relevance / math.log2(rank + 2)
+            for rank, relevance in enumerate(ranked_relevance)
+        )
+        ideal_count = min(3, max(1, len(keywords)))
+        ideal_dcg = sum(
+            1 / math.log2(rank + 2)
+            for rank in range(ideal_count)
+        )
+        ndcg_scores.append(dcg / ideal_dcg if ideal_dcg else 0.0)
+
 
     total = len(
         cases
@@ -158,6 +175,8 @@ def calculate_metrics(
             sum(
                 reciprocal_ranks
             ) / total,
+        "NDCG@3":
+            sum(ndcg_scores) / total,
     }
 
 
@@ -460,6 +479,7 @@ def main():
         f"{'Hit@1':>10}"
         f"{'Hit@3':>10}"
         f"{'MRR':>10}"
+        f"{'NDCG@3':>10}"
     )
 
     print(
@@ -474,6 +494,7 @@ def main():
             f"{values['Hit@1']:>10.3f}"
             f"{values['Hit@3']:>10.3f}"
             f"{values['MRR']:>10.3f}"
+            f"{values['NDCG@3']:>10.3f}"
         )
 
 

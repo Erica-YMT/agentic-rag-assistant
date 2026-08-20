@@ -1051,6 +1051,24 @@
     .voice-status.active { color: var(--tag-text); }
     .voice-status.error { color: var(--error); }
 
+    .stream-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .stream-control input {
+      accent-color: var(--accent);
+    }
+
     textarea {
       flex: 1;
       min-height: 52px;
@@ -1212,6 +1230,21 @@
 .stream-answer-body {
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+.stream-answer-body.is-typing::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 1.05em;
+    margin-left: 3px;
+    vertical-align: -0.16em;
+    background: var(--accent);
+    animation: streamTypingCursor 0.8s steps(1, end) infinite;
+}
+
+@keyframes streamTypingCursor {
+    50% { opacity: 0; }
 }
 
 /* STREAM_TRACE_UI_V1_END */
@@ -1411,7 +1444,7 @@
       </div>
 
       <div class="global-file-drop-hint">
-        支持 PDF / Markdown / TXT
+        支持 PDF / Markdown / TXT / XLSX / EML / CASE
         <br>
         松开后只上传文件，不会立即重建知识库
       </div>
@@ -1536,7 +1569,7 @@
             </div>
 
             <div class="knowledge-drop-hint">
-              支持 PDF / Markdown / TXT，也可以点击选择文件
+              支持 PDF / Markdown / TXT / XLSX / EML / CASE，也可以点击选择文件
             </div>
 
             <div
@@ -1550,7 +1583,7 @@
             class="knowledge-file-input"
             type="file"
             multiple
-            accept=".pdf,.md,.txt"
+            accept=".pdf,.md,.txt,.xlsx,.eml,.case"
           >
 
           <button
@@ -1602,6 +1635,10 @@
           </button>
           <button id="send" class="primary">发送</button>
         </div>
+        <label class="stream-control" for="tokenStreamToggle">
+          <input id="tokenStreamToggle" type="checkbox">
+          简洁 Token 直答（不显示探索/来源）
+        </label>
         <div id="voice-status" class="voice-status" aria-live="polite"></div>
       </section>
     </div>
@@ -1629,6 +1666,7 @@
       );
     const voiceButton = document.querySelector('#voice');
     const voiceStatus = document.querySelector('#voice-status');
+    const tokenStreamToggle = document.querySelector('#tokenStreamToggle');
     const SpeechRecognitionApi =
       window.SpeechRecognition || window.webkitSpeechRecognition;
     let sessionId = `web-${crypto.randomUUID()}`;
@@ -3387,7 +3425,12 @@
       title.textContent = '参考资料';
       item.append(title, document.createElement('br'));
       sources.forEach((source, index) => {
-        item.append(document.createTextNode(`${index + 1}. ${source}`));
+        item.append(document.createTextNode(`${index + 1}. `));
+        if (/^https?:\/\//i.test(String(source))) {
+          appendSafeAnswerLink(item, String(source), String(source));
+        } else {
+          item.append(document.createTextNode(String(source)));
+        }
         if (index < sources.length - 1) item.append(document.createElement('br'));
       });
       chat.append(item);
@@ -3587,6 +3630,60 @@
       error: '异常'
     };
 
+    function createAnswerTypewriter(answerBody) {
+      let pending = '';
+      let rendered = '';
+      let timerId = null;
+      let closed = false;
+      const finishWaiters = [];
+
+      answerBody.classList.add('is-typing');
+
+      function resolveFinished() {
+        if (!closed || pending || timerId !== null) return;
+        answerBody.classList.remove('is-typing');
+        while (finishWaiters.length) {
+          finishWaiters.shift()(rendered);
+        }
+      }
+
+      function tick() {
+        timerId = null;
+
+        if (pending) {
+          // Four characters per frame keeps Chinese answers readable while
+          // avoiding a long delay for answers delivered in buffered chunks.
+          const segment = pending.slice(0, 4);
+          pending = pending.slice(segment.length);
+          rendered += segment;
+          answerBody.textContent = rendered;
+          chat.scrollTop = chat.scrollHeight;
+          timerId = window.setTimeout(tick, 16);
+          return;
+        }
+
+        resolveFinished();
+      }
+
+      return {
+        append(text) {
+          pending += String(text || '');
+          if (pending && timerId === null) {
+            tick();
+          }
+        },
+
+        finish() {
+          closed = true;
+          if (!pending && timerId === null) {
+            answerBody.classList.remove('is-typing');
+            return Promise.resolve(rendered);
+          }
+          return new Promise(resolve => finishWaiters.push(resolve));
+        },
+      };
+    }
+
     function createStreamingMessage() {
       const traceCard =
         document.createElement('div');
@@ -3661,6 +3758,8 @@
       answerBody.className =
         'stream-answer-body';
 
+      const typewriter = createAnswerTypewriter(answerBody);
+
 
       answerItem.append(
         heading,
@@ -3692,6 +3791,7 @@
         traceList,
         traceState,
         answerBody,
+        typewriter,
         answerTiming:
           answerActions.timing
       };
@@ -4372,6 +4472,7 @@
     async function runStreamingChat(
       question
     ) {
+      const tokenMode = Boolean(tokenStreamToggle?.checked);
       const activeSession =
         sessionStorage.getItem(
           'agentic-rag-active-session-id'
@@ -4405,7 +4506,7 @@
 
         const response =
           await fetch(
-            `${apiBase}/chat/stream`,
+            `${apiBase}${tokenMode ? '/chat/token-stream' : '/chat/stream'}`,
             {
               method: 'POST',
               headers: withAuthHeaders({
@@ -4451,6 +4552,10 @@
 
         let buffer = '';
         let donePayload = null;
+
+        if (tokenMode) {
+          streamElements.traceState.textContent = 'Token 流式输出中…';
+        }
 
 
         while (true) {
@@ -4513,19 +4618,10 @@
 
 
             else if (
-              event.type
-              === 'answer_delta'
+              event.type === 'answer_delta'
+              || (tokenMode && event.type === 'token')
             ) {
-              streamElements
-                .answerBody
-                .textContent +=
-                  String(
-                    event.text
-                    || ''
-                  );
-
-              chat.scrollTop =
-                chat.scrollHeight;
+              streamElements.typewriter.append(event.text);
             }
 
 
@@ -4533,8 +4629,10 @@
               event.type
               === 'done'
             ) {
-              donePayload =
-                event;
+              donePayload = {
+                ...event,
+                called_tools: event.called_tools || []
+              };
 
               sessionId =
                 event.session_id
@@ -4545,10 +4643,6 @@
                 sessionId
               );
 
-              addSources(
-                event.sources
-                || []
-              );
             }
 
 
@@ -4570,10 +4664,7 @@
          * 避免输出过程中表格不停重排。
          */
         const finalAnswerText =
-          streamElements
-            .answerBody
-            .textContent
-          || '';
+          await streamElements.typewriter.finish();
 
         streamElements
           .answerBody
@@ -4585,6 +4676,11 @@
           streamElements
             .answerBody,
           finalAnswerText
+        );
+
+        addSources(
+          donePayload?.sources
+          || []
         );
 
 
@@ -4928,7 +5024,7 @@
       if (!supported.length) {
         setPanelStatus(
           '#upload-status',
-          '未找到支持的文件。仅支持 PDF、Markdown、TXT。',
+          '未找到支持的文件。支持 PDF、Markdown、TXT、XLSX、EML、CASE。',
           'error'
         );
 
@@ -5301,7 +5397,7 @@
 
         setPanelStatus(
           '#upload-status',
-          '没有可上传的文件。仅支持 PDF、Markdown、TXT。',
+          '没有可上传的文件。支持 PDF、Markdown、TXT、XLSX、EML、CASE。',
           'error'
         );
 
@@ -7632,8 +7728,19 @@
     const password = overlay.querySelector('#authPassword');
     const errorBox = overlay.querySelector('#authError');
 
+    function setAuthMessage(message, kind = '') {
+      errorBox.textContent = message;
+      errorBox.className = `auth-error ${kind}`.trim();
+    }
+
+    function saveAuth(data) {
+      sessionStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
+      sessionStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user || {}));
+      window.location.reload();
+    }
+
     async function login() {
-      errorBox.textContent = '';
+      setAuthMessage('');
       try {
         const data = await authApi('/auth/login', {
           method: 'POST',
@@ -7644,16 +7751,14 @@
           }),
         });
 
-        sessionStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
-        sessionStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user || {}));
-        window.location.reload();
+        saveAuth(data);
       } catch (error) {
-        errorBox.textContent = error.message;
+        setAuthMessage(error.message);
       }
     }
 
     async function register() {
-      errorBox.textContent = '';
+      setAuthMessage('');
       try {
         await authApi('/auth/register', {
           method: 'POST',
@@ -7665,7 +7770,7 @@
         });
         await login();
       } catch (error) {
-        errorBox.textContent = error.message;
+        setAuthMessage(error.message);
       }
     }
 

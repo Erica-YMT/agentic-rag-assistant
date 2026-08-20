@@ -186,6 +186,34 @@ class Agent:
         self.user_id = int(user_id)
         self.user_role = str(role or "user").strip().lower() or "user"
 
+    def stream_tokens(self, session_id: str, question: str):
+        """Yield upstream model deltas for a direct CHAT turn.
+
+        Tool planning remains on the existing buffered Agent loop; this path is
+        intentionally limited to low-risk conversational turns so transport
+        streaming is genuinely token-level rather than post-hoc chunking.
+        """
+        user_id = self.user_id
+        self.memory.add_message(session_id, "user", question, user_id=user_id)
+        history = self.memory.get_messages(session_id, user_id=user_id)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history]
+        stream = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            stream=True,
+        )
+        parts = []
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            text = str(getattr(delta, "content", "") or "")
+            if text:
+                parts.append(text)
+                yield text
+        self.memory.add_message(session_id, "assistant", "".join(parts), user_id=user_id)
+
     def get_called_tools(self):
         """获取上一轮调用过的工具名称。"""
         return self.tool_executor.get_called_tools()
@@ -392,6 +420,17 @@ class Agent:
             question,
             user_id=user_id,
         )
+
+        # Keep the prompt bounded while retaining a durable, user-scoped
+        # extractive summary of older turns.
+        compact_session = getattr(self.memory, "compact_session", None)
+        if callable(compact_session):
+            compact_session(
+                session_id=session_id,
+                keep_recent=20,
+                max_summary_chars=5000,
+                user_id=user_id,
+            )
 
         history = self.memory.get_messages(
             session_id,

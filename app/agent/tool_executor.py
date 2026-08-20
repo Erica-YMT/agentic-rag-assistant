@@ -9,6 +9,10 @@ from app.core.observability import (
     record_tool_result,
 )
 from app.db.tool_audit import tool_audit_store
+from app.agent.tool_reliability import (
+    ToolReliabilityController,
+    tool_reliability_controller,
+)
 from langsmith import get_current_run_tree, traceable
 
 
@@ -28,7 +32,16 @@ def _tool_result_status(result):
     if value.startswith(error_prefixes):
         return "error"
 
-    if value.startswith("工具 ") and " 执行失败：" in value:
+    if value.startswith("工具 ") and any(
+        marker in value
+        for marker in (
+            " 执行失败：",
+            " 执行超时：",
+            " 执行被限流：",
+            " 执行被熔断：",
+            " 执行排队失败：",
+        )
+    ):
         return "error"
 
     return "success"
@@ -72,10 +85,12 @@ class ToolExecutor:
         *,
         policy=None,
         audit_store=None,
+        reliability=None,
     ):
         self.available_tools = available_tools
         self.policy = policy or ToolPolicy()
         self.audit_store = audit_store or tool_audit_store
+        self.reliability = reliability or tool_reliability_controller
 
         # 当前执行上下文，由 Agent.run() 每轮刷新。
         self.user_id = None
@@ -320,14 +335,21 @@ class ToolExecutor:
         self.called_tools.append(tool_name)
         execution_start = time.perf_counter()
 
-        try:
-            result = tool(**arguments)
-        except Exception as exc:
-            result = f"工具 {tool_name} 执行失败：{exc}"
+        execution_arguments = dict(arguments)
 
+        # search_knowledge 的用户作用域只能来自已认证 Session，
+        # 不能让模型自己伪造 user_id。审计仍记录模型原始参数。
+        if tool_name == "search_knowledge":
+            execution_arguments["_user_id"] = self.user_id
+
+        reliability_result = self.reliability.execute(
+            tool_name=tool_name,
+            arguments=execution_arguments,
+            function=tool,
+        )
         elapsed_seconds = time.perf_counter() - execution_start
-        result = str(result)
-        status = _tool_result_status(result)
+        result = str(reliability_result.value)
+        status = reliability_result.status
 
         self.audit_store.finish(
             audit_id,

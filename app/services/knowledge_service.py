@@ -18,6 +18,7 @@ from app.db.knowledge_documents import (
 from rag.knowledge_base import (
     get_default_knowledge_base,
     reload_default_knowledge_base,
+    reload_user_knowledge_base,
 )
 from rag.incremental_index import (
     IncrementalIndexUnavailable,
@@ -31,7 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 KNOWLEDGE_ROOT = PROJECT_ROOT / "data" / "knowledge"
 PUBLIC_KNOWLEDGE_DIR = KNOWLEDGE_ROOT / "public"
 USER_KNOWLEDGE_ROOT = KNOWLEDGE_ROOT / "users"
-ALLOWED_EXTENSIONS = {".pdf", ".md", ".txt"}
+ALLOWED_EXTENSIONS = {".pdf", ".md", ".txt", ".xlsx", ".eml", ".case"}
 
 
 def _resolve_project_path(value: str | Path) -> Path:
@@ -173,7 +174,7 @@ class KnowledgeService:
             if not safe_name or suffix not in ALLOWED_EXTENSIONS:
                 raise ValueError(
                     f"不支持的文件：{safe_name or original_name}；"
-                    "仅支持 PDF、Markdown、TXT"
+                    "仅支持 PDF、Markdown、TXT、XLSX、EML、CASE"
                 )
 
             if not content:
@@ -218,10 +219,19 @@ class KnowledgeService:
             raise ValueError("[vector_store].backend 只支持 faiss / milvus")
 
         if vector_backend == "milvus":
-            logger.info("开始同步公共 Milvus Collection……")
-            from scripts.build_milvus_shadow import build_milvus_shadow
-            build_milvus_shadow()
-            logger.info("公共 Milvus Collection 同步完成")
+            from rag.milvus_sync import sync_milvus_from_faiss
+
+            logger.info("开始完整同步公共 Milvus Collection……")
+            summary = sync_milvus_from_faiss(
+                index_path=self._default_index_path(),
+                user_id=None,
+            )
+            logger.info(
+                "公共 Milvus 同步完成：collection=%s child=%s parent=%s",
+                summary["collection_name"],
+                summary["child_count"],
+                summary["parent_count"],
+            )
 
         reload_default_knowledge_base()
         self.document_store.mark_scope_status(
@@ -244,14 +254,35 @@ class KnowledgeService:
         if not has_documents:
             if index_dir.exists():
                 shutil.rmtree(index_dir)
+            if self._vector_backend_name() == "milvus":
+                from rag.milvus_sync import drop_milvus_scope
+                drop_milvus_scope(user_id=int(user_id))
+            reload_user_knowledge_base(user_id)
             return
 
-        # Phase 1 builds a hard-isolated private FAISS index.
-        # Agent + Milvus private retrieval is connected in the next phases.
+        # 本地 FAISS 始终保留：开发/回退使用。Milvus 模式再同步同一批 Child/Parent。
         build_index(
             data_path_override=document_dir,
             index_path_override=index_dir,
         )
+
+        if self._vector_backend_name() == "milvus":
+            from rag.milvus_sync import sync_milvus_from_faiss
+
+            logger.info("开始完整同步用户 %s 私有 Milvus Collection……", user_id)
+            summary = sync_milvus_from_faiss(
+                index_path=index_dir,
+                user_id=int(user_id),
+            )
+            logger.info(
+                "用户 %s 私有 Milvus 同步完成：collection=%s child=%s parent=%s",
+                user_id,
+                summary["collection_name"],
+                summary["child_count"],
+                summary["parent_count"],
+            )
+
+        reload_user_knowledge_base(user_id)
 
         self.document_store.mark_scope_status(
             scope="private",
@@ -326,6 +357,8 @@ class KnowledgeService:
                     _resolve_project_path(str(row["storage_path"]))
                     for row in rows
                 ],
+                sync_milvus=(self._vector_backend_name() == "milvus"),
+                milvus_user_id=int(user_id),
             )
             logger.info(
                 "用户 %s 私有知识库增量完成：removed=%s added=%s",
@@ -348,6 +381,7 @@ class KnowledgeService:
             )
             raise
 
+        reload_user_knowledge_base(user_id)
         self.document_store.mark_documents_status(
             document_ids=document_ids,
             index_status="indexed",
@@ -409,6 +443,10 @@ class KnowledgeService:
         if self.document_store.count_private(owner_user_id=user_id) <= 0:
             if index_dir.exists():
                 shutil.rmtree(index_dir)
+            if self._vector_backend_name() == "milvus":
+                from rag.milvus_sync import drop_milvus_scope
+                drop_milvus_scope(user_id=int(user_id))
+            reload_user_knowledge_base(user_id)
             return
 
         if not self.private_index_ready(user_id):
@@ -419,6 +457,8 @@ class KnowledgeService:
             result = incremental_update_faiss(
                 index_path=index_dir,
                 delete_relative_paths=[str(row["storage_path"]) for row in rows],
+                sync_milvus=(self._vector_backend_name() == "milvus"),
+                milvus_user_id=int(user_id),
             )
             logger.info(
                 "用户 %s 私有知识库增量删除完成：removed=%s",
@@ -432,6 +472,9 @@ class KnowledgeService:
                 exc,
             )
             self._rebuild_private_locked(user_id)
+            return
+
+        reload_user_knowledge_base(user_id)
 
     def rebuild_for_user(self, current_user: dict[str, Any]) -> float:
         start_time = time.perf_counter()

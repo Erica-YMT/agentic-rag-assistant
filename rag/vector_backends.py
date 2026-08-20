@@ -278,12 +278,36 @@ class MilvusBackend:
             ),
         )
 
+        # An empty or legacy collection must never look like a healthy backend:
+        # otherwise retrieval silently returns no evidence and bypasses the
+        # configured FAISS fallback. Full synchronization is the explicit
+        # operation that creates/migrates the collection.
+        if not self.store.collection_exists():
+            raise RuntimeError(
+                "Milvus Collection 不存在，请先执行完整同步："
+                f"{self.store.collection_name}"
+            )
+        if not self.store.schema_compatible():
+            raise RuntimeError(
+                "Milvus Collection Schema 不兼容，请先执行完整同步迁移："
+                f"{self.store.collection_name}"
+            )
+
     def list_documents(
         self,
     ) -> list:
         return (
             self.store
             .list_documents()
+        )
+
+    def load_parent_records(
+        self,
+    ) -> dict:
+        """Milvus 模式下直接从同一 Collection 读取 Parent records。"""
+        return (
+            self.store
+            .list_parent_records()
         )
 
     def search(

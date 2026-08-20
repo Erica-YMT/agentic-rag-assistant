@@ -86,6 +86,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
+
 # OBSERVABILITY_V1_START
 install_observability(app)
 # OBSERVABILITY_V1_END
@@ -550,17 +560,6 @@ def _extract_stream_sources(
         ):
             continue
 
-        if (
-            str(
-                record.get(
-                    "tool_name",
-                    ""
-                )
-            )
-            != "search_knowledge"
-        ):
-            continue
-
         result = str(
             record.get(
                 "result",
@@ -568,6 +567,21 @@ def _extract_stream_sources(
             )
             or ""
         )
+
+        tool_name = str(record.get("tool_name", ""))
+
+        if tool_name == "search_web":
+            for url in re.findall(
+                r"^链接：(https?://[^\s]+)",
+                result,
+                flags=re.MULTILINE,
+            ):
+                if url not in sources:
+                    sources.append(url)
+            continue
+
+        if tool_name != "search_knowledge":
+            continue
 
         for source in re.findall(
             r"^来源：(.+)$",
@@ -936,6 +950,23 @@ def chat_stream(
                 "no",
         },
     )
+
+
+@app.post("/chat/token-stream", summary="上游模型 Token-level 流式对话")
+def chat_token_stream(
+    request: ChatRequest,
+    current_user=Depends(get_current_user),
+):
+    agent, session_lock = get_session_agent(request.session_id)
+    agent.bind_user(int(current_user["id"]), role=str(current_user.get("role", "user")))
+
+    def generate():
+        with session_lock:
+            for token in agent.stream_tokens(request.session_id, request.question):
+                yield _stream_json_line({"type": "token", "text": token})
+        yield _stream_json_line({"type": "done", "session_id": request.session_id})
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 # CHAT_STREAMING_V1_END
 

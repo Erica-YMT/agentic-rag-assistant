@@ -8,6 +8,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from app.memory.compaction import build_summary
+from app.privacy.pii import sanitize_text
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -125,7 +127,7 @@ class SQLiteMemory:
     ) -> None:
         session_id = str(session_id).strip()
         role = str(role).strip()
-        content = str(content)
+        content = sanitize_text(content)
 
         if not session_id:
             raise ValueError("session_id 不能为空")
@@ -284,6 +286,34 @@ class SQLiteMemory:
             ).fetchall()
 
         return [dict(row) for row in rows]
+
+    def compact_session(
+        self,
+        session_id: str,
+        keep_recent: int = 20,
+        max_summary_chars: int = 5000,
+    ) -> dict[str, int | bool]:
+        messages = self.get_messages(session_id)
+        keep_recent = max(2, int(keep_recent))
+        if len(messages) <= keep_recent:
+            return {"compacted": False, "removed": 0}
+        old_messages = messages[:-keep_recent]
+        summary = build_summary(old_messages, max_chars=max_summary_chars)
+        if not summary:
+            return {"compacted": False, "removed": 0}
+        with self._connect() as connection:
+            ids = connection.execute(
+                "SELECT id FROM messages WHERE session_id = ? ORDER BY id ASC",
+                (str(session_id),),
+            ).fetchall()
+            remove_ids = [int(row["id"]) for row in ids[:-keep_recent]]
+            connection.executemany("DELETE FROM messages WHERE id = ?", [(value,) for value in remove_ids])
+            now = utc_now()
+            connection.execute(
+                "INSERT INTO messages(session_id, role, content, created_at) VALUES (?, 'system', ?, ?)",
+                (str(session_id), "【会话摘要】\n" + summary, now),
+            )
+        return {"compacted": True, "removed": len(remove_ids)}
 
     def list_sessions(
         self,
@@ -515,6 +545,26 @@ class Memory:
         return self._store.get_messages(
             session_id,
             limit=limit,
+        )
+
+    def compact_session(
+        self,
+        session_id: str,
+        keep_recent: int = 20,
+        max_summary_chars: int = 5000,
+        user_id: int | str | None = None,
+    ) -> dict[str, int | bool]:
+        if self._backend_name == "postgres":
+            return self._store.compact_session(
+                session_id=session_id,
+                keep_recent=keep_recent,
+                max_summary_chars=max_summary_chars,
+                user_id=user_id,
+            )
+        return self._store.compact_session(
+            session_id,
+            keep_recent=keep_recent,
+            max_summary_chars=max_summary_chars,
         )
 
     def get_session_messages(

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from email import policy
+from email.parser import BytesParser
+from html import unescape
 import shutil
 import torch
 import tomllib
@@ -13,6 +16,7 @@ from langchain_community.document_loaders import (
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -76,7 +80,40 @@ def save_index_manifest(index_path: Path, settings: dict) -> None:
     temp_path.replace(path)
 
 
-SUPPORTED_DOCUMENT_SUFFIXES = {".pdf", ".md", ".txt"}
+SUPPORTED_DOCUMENT_SUFFIXES = {".pdf", ".md", ".txt", ".xlsx", ".eml", ".case"}
+
+
+def _load_structured_file(file_path: Path) -> list[Document]:
+    suffix = file_path.suffix.lower()
+    if suffix == ".xlsx":
+        try:
+            import openpyxl
+        except ImportError as error:
+            raise RuntimeError(
+                "XLSX 解析依赖未安装，请安装 openpyxl 后重试。"
+            ) from error
+        workbook = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        documents = []
+        for sheet in workbook.worksheets:
+            rows = []
+            for row in sheet.iter_rows(values_only=True):
+                values = [str(value).strip() for value in row if value is not None and str(value).strip()]
+                if values:
+                    rows.append(" | ".join(values))
+            if rows:
+                documents.append(Document(page_content=f"Sheet: {sheet.title}\n" + "\n".join(rows), metadata={"sheet": sheet.title}))
+        return documents
+    if suffix == ".eml":
+        with file_path.open("rb") as stream:
+            message = BytesParser(policy=policy.default).parse(stream)
+        parts = [f"Subject: {message.get('subject', '')}", f"From: {message.get('from', '')}", f"To: {message.get('to', '')}"]
+        body = message.get_body(preferencelist=("plain", "html"))
+        if body is not None:
+            parts.append(unescape(body.get_content()))
+        return [Document(page_content="\n".join(parts), metadata={"email_subject": message.get("subject", "")})]
+    if suffix == ".case":
+        return [Document(page_content=file_path.read_text(encoding="utf-8"), metadata={})]
+    return []
 
 
 def load_document_file(file_path: Path) -> list:
@@ -93,17 +130,22 @@ def load_document_file(file_path: Path) -> list:
 
     print(f"正在读取：{file_path.name}")
 
-    if suffix == ".pdf":
+    if suffix in {".xlsx", ".eml", ".case"}:
+        loaded_documents = _load_structured_file(file_path)
+    elif suffix == ".pdf":
         loader = PyPDFLoader(str(file_path))
+        loaded_documents = loader.load()
     else:
         loader = TextLoader(
             str(file_path),
             encoding="utf-8",
             autodetect_encoding=True,
         )
-
-    loaded_documents = loader.load()
-    relative_path = file_path.relative_to(PROJECT_ROOT)
+        loaded_documents = loader.load()
+    try:
+        relative_path = file_path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        relative_path = Path(file_path.name)
 
     for document in loaded_documents:
         document.metadata["file_name"] = file_path.name

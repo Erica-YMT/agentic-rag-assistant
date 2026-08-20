@@ -15,6 +15,7 @@ from .reranker import CrossEncoderReranker
 from .auto_merger import AutoMerger
 from .corrective_rag import CorrectiveRAGController
 from .rag_graph import ComplexRAGController
+from .dynamic_modes import classify_mode
 
 
 # =========================
@@ -53,6 +54,7 @@ class KnowledgeBase:
         score_threshold: float = DEFAULT_SCORE_THRESHOLD,
         vector_backend_name: str = "faiss",
         milvus_settings: dict | None = None,
+        shared_components=None,
     ):
         self.score_threshold = float(
             score_threshold
@@ -66,61 +68,58 @@ class KnowledgeBase:
             .lower()
         )
 
-        # 查询端必须和建库端使用相同的
-        # Embedding 模型与归一化配置。
+        # 查询端必须和建库端使用相同的 Embedding 模型与归一化配置。
+        # 私有知识库复用公共 KnowledgeBase 的模型对象，避免每个用户再加载一份。
         embedding_config = config.get(
             "embedding",
             {}
         )
 
-        embedding_device = str(
-            embedding_config.get(
-                "device",
+        if shared_components is not None:
+            self.embedding_model = shared_components.embedding_model
+        else:
+            embedding_device = str(
+                embedding_config.get(
+                    "device",
+                    "auto",
+                )
+            ).strip().lower()
+
+            if embedding_device not in {
                 "auto",
-            )
-        ).strip().lower()
-
-        if embedding_device not in {
-            "auto",
-            "cpu",
-            "cuda",
-        }:
-            raise ValueError(
-                "[embedding].device "
-                "只支持 auto / cpu / cuda"
-            )
-
-        if embedding_device == "auto":
-            resolved_embedding_device = (
-                "cuda"
-                if torch.cuda.is_available()
-                else "cpu"
-            )
-
-        elif embedding_device == "cuda":
-            if not torch.cuda.is_available():
-                raise RuntimeError(
-                    "[embedding].device=cuda，"
-                    "但当前运行环境无法使用 CUDA"
+                "cpu",
+                "cuda",
+            }:
+                raise ValueError(
+                    "[embedding].device "
+                    "只支持 auto / cpu / cuda"
                 )
 
-            resolved_embedding_device = "cuda"
+            if embedding_device == "auto":
+                resolved_embedding_device = (
+                    "cuda"
+                    if torch.cuda.is_available()
+                    else "cpu"
+                )
+            elif embedding_device == "cuda":
+                if not torch.cuda.is_available():
+                    raise RuntimeError(
+                        "[embedding].device=cuda，"
+                        "但当前运行环境无法使用 CUDA"
+                    )
+                resolved_embedding_device = "cuda"
+            else:
+                resolved_embedding_device = "cpu"
 
-        else:
-            resolved_embedding_device = "cpu"
-
-        self.embedding_model = (
-            HuggingFaceEmbeddings(
+            self.embedding_model = HuggingFaceEmbeddings(
                 model_name=model_dir,
                 model_kwargs={
-                    "device":
-                        resolved_embedding_device,
+                    "device": resolved_embedding_device,
                 },
                 encode_kwargs={
                     "normalize_embeddings": True,
                 },
             )
-        )
 
         if (
             self.vector_backend_name
@@ -196,12 +195,20 @@ class KnowledgeBase:
             )
         )
 
+        milvus_parent_records = None
+        if self.vector_backend_name == "milvus":
+            milvus_parent_records = (
+                self.vector_backend
+                .load_parent_records()
+            )
+
         self.auto_merger = (
             AutoMerger(
                 index_path=index_path,
                 settings=(
                     auto_merge_config
                 ),
+                parent_records=milvus_parent_records,
             )
         )
 
@@ -231,7 +238,21 @@ class KnowledgeBase:
             )
         )
 
-        if self.reranker_enabled:
+        if shared_components is not None:
+            self.reranker = getattr(
+                shared_components,
+                "reranker",
+                None,
+            )
+            self.reranker_enabled = bool(
+                getattr(
+                    shared_components,
+                    "reranker_enabled",
+                    False,
+                )
+            )
+
+        elif self.reranker_enabled:
 
             try:
                 self.reranker = (
@@ -493,10 +514,12 @@ class KnowledgeBase:
 
 
 # =========================
-# 默认知识库实例
+# 公共 / 私有知识库实例
 # =========================
 
 _default_knowledge_base = None
+_private_knowledge_bases: dict[int, KnowledgeBase] = {}
+_private_kb_cache_limit = 16
 _default_top_k = 3
 
 
@@ -504,11 +527,7 @@ def _resolve_project_path(
     path_value,
     config_name
 ):
-    """
-    将配置中的路径转换为绝对路径。
-
-    相对路径以项目根目录为基准。
-    """
+    """将配置中的路径转换为绝对路径；相对路径以项目根目录为基准。"""
 
     if not path_value:
         raise ValueError(
@@ -516,27 +535,49 @@ def _resolve_project_path(
             f"{config_name}"
         )
 
-    path = Path(
-        str(path_value)
-    )
-
+    path = Path(str(path_value))
     if not path.is_absolute():
-        path = (
-            PROJECT_ROOT
-            /
-            path
-        )
-
+        path = PROJECT_ROOT / path
     return path.resolve()
 
 
-def get_default_knowledge_base():
-    """
-    根据 config.toml 创建默认知识库。
+def _vector_backend_name() -> str:
+    backend = str(
+        config.get("vector_store", {}).get("backend", "faiss")
+    ).strip().lower()
+    if backend not in {"faiss", "milvus"}:
+        raise ValueError("[vector_store].backend 只支持 faiss / milvus")
+    return backend
 
-    第一次调用时加载模型和索引，
-    后续调用复用已经创建的对象。
-    """
+
+def _score_threshold() -> float:
+    try:
+        return float(
+            config.get("embedding", {}).get(
+                "score_threshold",
+                DEFAULT_SCORE_THRESHOLD,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("[embedding].score_threshold 必须是数字") from exc
+
+
+def _scoped_milvus_settings(user_id: int | None = None) -> dict:
+    settings = dict(config.get("milvus", {}) or {})
+    if user_id is None:
+        return settings
+
+    from .milvus_store import scoped_collection_name
+
+    settings["collection_name"] = scoped_collection_name(
+        str(settings.get("collection_name", "agentic_rag_chunks")),
+        user_id=int(user_id),
+    )
+    return settings
+
+
+def get_default_knowledge_base():
+    """Create/cache the public KnowledgeBase."""
 
     global _default_knowledge_base
     global _default_top_k
@@ -544,143 +585,178 @@ def get_default_knowledge_base():
     if _default_knowledge_base is not None:
         return _default_knowledge_base
 
-    embedding_config = config.get(
-        "embedding",
-        {}
-    )
-
-    vector_store_config = config.get(
-        "vector_store",
-        {}
-    )
-
-    vector_backend_name = str(
-        vector_store_config.get(
-            "backend",
-            "faiss",
-        )
-    ).strip().lower()
-
-    if vector_backend_name not in {
-        "faiss",
-        "milvus",
-    }:
-        raise ValueError(
-            "[vector_store].backend "
-            "只支持 faiss / milvus"
-        )
-
-    milvus_config = config.get(
-        "milvus",
-        {}
-    )
+    embedding_config = config.get("embedding", {})
+    vector_backend_name = _vector_backend_name()
 
     model_path = _resolve_project_path(
-        embedding_config.get(
-            "model_path"
-        ),
-        "[embedding].model_path"
+        embedding_config.get("model_path"),
+        "[embedding].model_path",
     )
-
     index_path = _resolve_project_path(
-        embedding_config.get(
-            "index_path",
-            "faiss_index"
-        ),
-        "[embedding].index_path"
+        embedding_config.get("index_path", "faiss_index"),
+        "[embedding].index_path",
     )
 
     if not model_path.exists():
-        raise FileNotFoundError(
-            "没有找到 Embedding 模型："
-            f"{model_path}"
-        )
-
+        raise FileNotFoundError(f"没有找到 Embedding 模型：{model_path}")
     if not index_path.exists():
-        raise FileNotFoundError(
-            "没有找到本地索引目录（Auto-Merging 仍需要 parent_store.json）："
-            f"{index_path}"
-        )
+        raise FileNotFoundError(f"没有找到本地索引目录：{index_path}")
 
     try:
-        top_k = int(
-            embedding_config.get(
-                "top_k",
-                3
-            )
-        )
-    except (
-        TypeError,
-        ValueError
-    ) as exc:
-        raise ValueError(
-            "[embedding].top_k 必须是整数"
-        ) from exc
-
+        top_k = int(embedding_config.get("top_k", 3))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("[embedding].top_k 必须是整数") from exc
     if not 1 <= top_k <= 20:
-        raise ValueError(
-            "[embedding].top_k "
-            "必须在 1 到 20 之间"
-        )
-
-    try:
-        score_threshold = float(
-            embedding_config.get(
-                "score_threshold",
-                DEFAULT_SCORE_THRESHOLD
-            )
-        )
-    except (
-        TypeError,
-        ValueError
-    ) as exc:
-        raise ValueError(
-            "[embedding].score_threshold "
-            "必须是数字"
-        ) from exc
+        raise ValueError("[embedding].top_k 必须在 1 到 20 之间")
 
     _default_top_k = top_k
 
-    _default_knowledge_base = (
-        KnowledgeBase(
-            model_dir=str(
-                model_path
-            ),
-            index_path=str(
-                index_path
-            ),
-            score_threshold=(
-                score_threshold
-            ),
-            vector_backend_name=(
-                vector_backend_name
-            ),
-            milvus_settings=(
-                milvus_config
-            ),
+    try:
+        _default_knowledge_base = KnowledgeBase(
+            model_dir=str(model_path),
+            index_path=str(index_path),
+            score_threshold=_score_threshold(),
+            vector_backend_name=vector_backend_name,
+            milvus_settings=_scoped_milvus_settings(),
         )
-    )
+    except Exception as exc:
+        fallback_enabled = bool(
+            config.get("vector_store", {}).get("fallback_to_faiss", True)
+        )
+        if vector_backend_name != "milvus" or not fallback_enabled:
+            raise
+
+        print(
+            "⚠️ Milvus 公共知识库加载失败，自动回退 FAISS："
+            f"{exc}"
+        )
+        _default_knowledge_base = KnowledgeBase(
+            model_dir=str(model_path),
+            index_path=str(index_path),
+            score_threshold=_score_threshold(),
+            vector_backend_name="faiss",
+            milvus_settings={},
+        )
 
     return _default_knowledge_base
 
 
-def reload_default_knowledge_base():
+def get_user_knowledge_base(user_id: int | str):
     """
-    重新加载默认知识库。
+    Return the authenticated user's private KnowledgeBase when it exists.
 
-    用于知识库索引重建完成后，
-    丢弃旧的 KnowledgeBase 实例并按配置重新加载。
+    The private KB reuses the public KB's embedding/reranker objects, so it does
+    not load another large model per user. The cache only keeps a small number
+    of lightweight backend/BM25 objects.
     """
+
+    user_id = int(user_id)
+    if user_id <= 0:
+        return None
+
+    cached = _private_knowledge_bases.get(user_id)
+    if cached is not None:
+        return cached
+
+    embedding_config = config.get("embedding", {})
+    model_path = _resolve_project_path(
+        embedding_config.get("model_path"),
+        "[embedding].model_path",
+    )
+    base_index_path = _resolve_project_path(
+        embedding_config.get("index_path", "faiss_index"),
+        "[embedding].index_path",
+    )
+    private_index_path = base_index_path / "users" / str(user_id)
+
+    if not (
+        (private_index_path / "index.faiss").is_file()
+        and (private_index_path / "index.pkl").is_file()
+    ):
+        return None
+
+    public_kb = get_default_knowledge_base()
+    requested_backend = _vector_backend_name()
+
+    try:
+        private_kb = KnowledgeBase(
+            model_dir=str(model_path),
+            index_path=str(private_index_path),
+            score_threshold=_score_threshold(),
+            vector_backend_name=requested_backend,
+            milvus_settings=_scoped_milvus_settings(user_id),
+            shared_components=public_kb,
+        )
+    except Exception as exc:
+        fallback_enabled = bool(
+            config.get("vector_store", {}).get("fallback_to_faiss", True)
+        )
+        if requested_backend != "milvus" or not fallback_enabled:
+            raise
+
+        print(
+            f"⚠️ 用户 {user_id} 私有 Milvus 加载失败，自动回退 FAISS：{exc}"
+        )
+        private_kb = KnowledgeBase(
+            model_dir=str(model_path),
+            index_path=str(private_index_path),
+            score_threshold=_score_threshold(),
+            vector_backend_name="faiss",
+            milvus_settings={},
+            shared_components=public_kb,
+        )
+
+    if len(_private_knowledge_bases) >= _private_kb_cache_limit:
+        oldest_user_id = next(iter(_private_knowledge_bases))
+        _private_knowledge_bases.pop(oldest_user_id, None)
+
+    _private_knowledge_bases[user_id] = private_kb
+    return private_kb
+
+
+def reload_default_knowledge_base():
+    """Invalidate public and private KB caches after a public rebuild/update."""
 
     global _default_knowledge_base
-
     _default_knowledge_base = None
-
+    _private_knowledge_bases.clear()
     return get_default_knowledge_base()
 
 
+def reload_user_knowledge_base(user_id: int | str) -> None:
+    """Invalidate one private KB without eagerly loading models/indexes."""
+
+    _private_knowledge_bases.pop(int(user_id), None)
+
+
+def _search_scoped_knowledge(
+    query: str,
+    *,
+    user_id: int | None,
+    k: int,
+) -> str:
+    """Search public + authenticated user's private KB with hard scope isolation."""
+
+    parts = [
+        "【公共知识库】\n"
+        + get_default_knowledge_base().search(query, k=k)
+    ]
+
+    if user_id is not None:
+        private_kb = get_user_knowledge_base(int(user_id))
+        if private_kb is not None:
+            parts.append(
+                "【我的私有知识库】\n"
+                + private_kb.search(query, k=k)
+            )
+
+    return "\n\n".join(parts)
+
+
 def _search_knowledge_single(
-    query
+    query,
+    _user_id=None,
+    _k=None,
 ):
     """
     Agent 使用的知识库搜索工具。
@@ -695,19 +771,16 @@ def _search_knowledge_single(
     -> 返回证据或明确提示证据不足。
     """
 
-    knowledge_base = (
-        get_default_knowledge_base()
-    )
-
     # ==========================================
-    # 第一次 Hybrid Retrieval
+    # 第一次 Public + Private Scoped Retrieval
     # ==========================================
 
-    first_result = (
-        knowledge_base.search(
-            query,
-            k=_default_top_k
-        )
+    user_id = None if _user_id is None else int(_user_id)
+
+    first_result = _search_scoped_knowledge(
+        str(query),
+        user_id=user_id,
+        k=int(_k or _default_top_k),
     )
 
     controller = getattr(
@@ -806,11 +879,10 @@ def _search_knowledge_single(
     # 第二次 Hybrid Retrieval
     # ==========================================
 
-    second_result = (
-        knowledge_base.search(
-            rewritten_query,
-            k=_default_top_k,
-        )
+    second_result = _search_scoped_knowledge(
+        rewritten_query,
+        user_id=user_id,
+        k=int(_k or _default_top_k),
     )
 
     print(
@@ -880,66 +952,64 @@ def _search_knowledge_single(
 # Complex RAG
 # ==========================================================
 
-_complex_rag_controller = None
+_complex_rag_controllers: dict[tuple[int, str], ComplexRAGController] = {}
 
 
 def _raw_search_knowledge(
-    query
+    query,
+    _user_id=None,
+    _k=None,
 ):
-    """
-    只执行原始 Hybrid Retrieval。
+    """Raw scoped Hybrid Retrieval for Complex-RAG workers."""
 
-    供 LangGraph 子问题 Worker 使用。
-    不进行额外 LLM Grade，避免多个 Worker
-    同时产生过多模型请求。
-    """
-
-    knowledge_base = (
-        get_default_knowledge_base()
-    )
-
-    return knowledge_base.search(
-        query,
-        k=_default_top_k,
+    user_id = None if _user_id is None else int(_user_id)
+    return _search_scoped_knowledge(
+        str(query),
+        user_id=user_id,
+        k=int(_k or _default_top_k),
     )
 
 
 def search_knowledge(
-    query
+    query,
+    _user_id=None,
 ):
     """
-    Agent 统一知识库入口。
+    Agent unified RAG entry.
 
-    简单问题：
-        原 Corrective RAG
-
-    复杂问题：
-        Complexity
-        -> Question Decomposition
-        -> LangGraph Send 并行检索
-        -> Merge
-        -> Coverage Grade
+    `_user_id` is injected by ToolExecutor from the authenticated session and is
+    never exposed in the LLM tool schema. It controls access to the caller's
+    hard-isolated private FAISS/Milvus scope.
     """
 
-    global _complex_rag_controller
+    user_id = None if _user_id is None else int(_user_id)
+    mode = classify_mode(query)
+    cache_key = (int(user_id or 0), mode.name)
 
-    if (
-        _complex_rag_controller
-        is None
-    ):
-        _complex_rag_controller = (
-            ComplexRAGController(
-                raw_retrieve=(
-                    _raw_search_knowledge
-                ),
-                simple_retrieve=(
-                    _search_knowledge_single
-                ),
-            )
-        )
+    controller = _complex_rag_controllers.get(cache_key)
+    if controller is None:
+        if len(_complex_rag_controllers) >= _private_kb_cache_limit:
+            oldest_key = next(iter(_complex_rag_controllers))
+            _complex_rag_controllers.pop(oldest_key, None)
 
-    return (
-        _complex_rag_controller.run(
-            query
+        controller = ComplexRAGController(
+            raw_retrieve=(
+                lambda subquery, uid=user_id:
+                _raw_search_knowledge(
+                    subquery,
+                    _user_id=uid,
+                    _k=mode.top_k,
+                )
+            ),
+            simple_retrieve=(
+                lambda simple_query, uid=user_id:
+                _search_knowledge_single(
+                    simple_query,
+                    _user_id=uid,
+                    _k=mode.top_k,
+                )
+            ),
         )
-    )
+        _complex_rag_controllers[cache_key] = controller
+
+    return f"【动态 RAG 模式：{mode.name}】\n{controller.run(query)}"

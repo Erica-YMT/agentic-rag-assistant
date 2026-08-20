@@ -29,6 +29,10 @@ from app.auth.security import (
 from app.auth.user_store import (
     UserStore,
 )
+from app.auth.email_verification import (
+    EmailDeliveryError,
+    email_verification_store,
+)
 
 
 router = APIRouter(
@@ -57,6 +61,7 @@ class RegisterRequest(BaseModel):
         min_length=8,
         max_length=128,
     )
+    email: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -71,6 +76,14 @@ class LoginRequest(BaseModel):
     )
 
 
+class EmailCodeRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+
+
+class EmailLoginRequest(EmailCodeRequest):
+    code: str = Field(min_length=6, max_length=6)
+
+
 class UserResponse(BaseModel):
     id: int
     username: str
@@ -78,6 +91,7 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: str
     updated_at: str
+    email: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -228,6 +242,7 @@ def register(
         username=username,
         password_hash=password_hash,
         role="user",
+        email=request.email,
     )
 
     if user is None:
@@ -237,6 +252,34 @@ def register(
         )
 
     return user
+
+
+@router.post("/request-code")
+def request_email_code(request: EmailCodeRequest):
+    if not email_verification_store.is_delivery_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="邮箱验证码服务尚未配置 SMTP。",
+        )
+    try:
+        email_verification_store.issue(request.email)
+    except EmailDeliveryError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="验证码发送失败：SMTP 服务器不可达或拒绝投递。",
+        ) from error
+    return {"ok": True, "message": "验证码已发送，请查收邮箱。"}
+
+
+@router.post("/login-email", response_model=LoginResponse)
+def login_email(request: EmailLoginRequest):
+    if not email_verification_store.verify(request.email, request.code):
+        raise HTTPException(status_code=401, detail="验证码无效或已过期")
+    user = store.get_auth_user_by_email(request.email)
+    if user is None or not bool(user["is_active"]):
+        raise HTTPException(status_code=401, detail="邮箱或验证码错误")
+    token, expires_in = create_access_token(user_id=int(user["id"]), username=str(user["username"]), role=str(user["role"]))
+    return {"access_token": token, "token_type": "bearer", "expires_in": expires_in, "user": {key: user.get(key) for key in ("id", "username", "email", "role", "is_active", "created_at", "updated_at")}}
 
 
 @router.post(

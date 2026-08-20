@@ -11,6 +11,7 @@ from app.schemas import (
     KnowledgeDocumentMutationResponse,
 )
 from app.services.knowledge_service import knowledge_service
+from app.security.guards import validate_upload
 
 
 router = APIRouter(
@@ -63,6 +64,10 @@ async def upload_documents(
             )
 
         uploads.append((upload.filename or "", content))
+        try:
+            validate_upload(upload.filename or "", content)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     try:
         saved_rows = knowledge_service.save_documents(

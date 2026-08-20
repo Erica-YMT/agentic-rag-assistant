@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from app.privacy.pii import contains_pii, sanitize_text
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -55,7 +56,7 @@ def extract_explicit_memory(text: str) -> str | None:
 
 def contains_sensitive_content(content: str) -> bool:
     """避免把密码、密钥等敏感信息写入长期记忆。"""
-    return any(
+    return contains_pii(content) or any(
         pattern.search(content)
         for pattern in SENSITIVE_PATTERNS
     )
@@ -129,6 +130,7 @@ class SQLiteUserMemoryStore:
         user_id: str = DEFAULT_USER_ID,
     ) -> dict[str, Any]:
         content = str(content).strip()
+        content = sanitize_text(content)
 
         if not content:
             raise ValueError("记忆内容不能为空")

@@ -48,6 +48,7 @@ def _ensure_schema() -> None:
                 CREATE TABLE IF NOT EXISTS users (
                     id BIGSERIAL PRIMARY KEY,
                     username TEXT NOT NULL,
+                    email TEXT NULL,
                     password_hash TEXT NOT NULL,
                     role TEXT NOT NULL
                         DEFAULT 'user',
@@ -64,6 +65,12 @@ def _ensure_schema() -> None:
                 """
             )
 
+            connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email_lower ON users (LOWER(email)) WHERE email IS NOT NULL"
+            )
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS
@@ -97,6 +104,7 @@ class UserStore:
         username: str,
         password_hash: str,
         role: str = "user",
+        email: str | None = None,
     ) -> dict[str, Any] | None:
 
         username = (
@@ -129,6 +137,7 @@ class UserStore:
                     """
                     INSERT INTO users (
                         username,
+                        email,
                         password_hash,
                         role,
                         is_active,
@@ -139,6 +148,7 @@ class UserStore:
                         %s,
                         %s,
                         %s,
+                        %s,
                         TRUE,
                         %s,
                         %s
@@ -146,6 +156,7 @@ class UserStore:
                     RETURNING
                         id,
                         username,
+                        email,
                         role,
                         is_active,
                         created_at,
@@ -153,6 +164,7 @@ class UserStore:
                     """,
                     (
                         username,
+                        email,
                         password_hash,
                         role,
                         now,
@@ -188,6 +200,7 @@ class UserStore:
                 SELECT
                     id,
                     username,
+                    email,
                     password_hash,
                     role,
                     is_active,
@@ -206,6 +219,14 @@ class UserStore:
             return None
 
         return dict(row)
+
+    def get_auth_user_by_email(self, email: str) -> dict[str, Any] | None:
+        with postgres_connection() as connection:
+            row = connection.execute(
+                "SELECT id, username, email, password_hash, role, is_active, created_at, updated_at FROM users WHERE LOWER(email) = %s LIMIT 1",
+                (str(email).strip().lower(),),
+            ).fetchone()
+        return None if row is None else dict(row)
 
     def get_user_by_id(
         self,

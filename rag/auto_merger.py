@@ -26,6 +26,8 @@ class AutoMerger:
         self,
         index_path: str,
         settings: dict | None = None,
+        *,
+        parent_records: dict | None = None,
     ):
         settings = (
             settings
@@ -87,50 +89,62 @@ class AutoMerger:
             )
             return
 
-        if not (
-            self.parent_store_path
-            .exists()
-        ):
-            print(
-                "⚠️ 没有找到 "
-                "parent_store.json，"
-                "AutoMerge 自动降级关闭"
-            )
-
-            self.enabled = False
-            return
-
-        try:
-            with (
+        # Milvus 模式可直接注入 Milvus 中的 Parent records，
+        # 从而不再依赖本地 parent_store.json。FAISS 模式仍使用文件。
+        if parent_records is not None:
+            self.parents = dict(parent_records or {})
+            if not self.parents:
+                print(
+                    "⚠️ Milvus 中没有 Parent Chunk，"
+                    "AutoMerge 自动降级关闭"
+                )
+                self.enabled = False
+                return
+        else:
+            if not (
                 self.parent_store_path
-                .open(
-                    "r",
-                    encoding="utf-8",
+                .exists()
+            ):
+                print(
+                    "⚠️ 没有找到 "
+                    "parent_store.json，"
+                    "AutoMerge 自动降级关闭"
                 )
-            ) as file:
-                payload = json.load(
-                    file
+
+                self.enabled = False
+                return
+
+            try:
+                with (
+                    self.parent_store_path
+                    .open(
+                        "r",
+                        encoding="utf-8",
+                    )
+                ) as file:
+                    payload = json.load(
+                        file
+                    )
+
+                self.parents = dict(
+                    payload.get(
+                        "parents",
+                        {},
+                    )
                 )
 
-            self.parents = dict(
-                payload.get(
-                    "parents",
-                    {},
+            except Exception as exc:
+                print(
+                    "⚠️ Parent Store "
+                    "加载失败，"
+                    "AutoMerge 自动关闭："
+                    f"{exc}"
                 )
-            )
 
-        except Exception as exc:
-            print(
-                "⚠️ Parent Store "
-                "加载失败，"
-                "AutoMerge 自动关闭："
-                f"{exc}"
-            )
+                self.enabled = False
+                self.parents = {}
 
-            self.enabled = False
-            self.parents = {}
-
-            return
+                return
 
         print(
             "✅ AutoMerger 已加载："

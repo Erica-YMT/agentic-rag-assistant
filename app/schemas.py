@@ -2,7 +2,8 @@ import uuid
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from app.security.guards import is_prompt_injection
 
 
 class ChatRequest(BaseModel):
@@ -20,6 +21,13 @@ class ChatRequest(BaseModel):
         max_length=100,
         description="会话 ID，用于区分不同用户或不同对话",
     )
+
+    @field_validator("question")
+    @classmethod
+    def reject_prompt_injection(cls, value: str) -> str:
+        if is_prompt_injection(value):
+            raise ValueError("请求包含疑似 Prompt Injection 内容")
+        return value
 
 class ToolCallRecord(BaseModel):
     """Agent 的一次工具调用记录。"""

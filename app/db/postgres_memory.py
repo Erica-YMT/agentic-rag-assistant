@@ -16,6 +16,8 @@ from typing import Any
 
 from .postgres import postgres_connection
 from .redis_cache import get_redis_client
+from app.memory.compaction import build_summary
+from app.privacy.pii import sanitize_text
 
 
 logger = logging.getLogger(__name__)
@@ -425,7 +427,7 @@ class PostgresMemory:
         session_id = self._session_id(session_id)
         user_id = _normalize_user_id(user_id)
         role = str(role).strip()
-        content = str(content)
+        content = sanitize_text(content)
 
         if role not in ALLOWED_ROLES:
             raise ValueError(
@@ -798,3 +800,40 @@ class PostgresMemory:
         )
 
         return deleted
+
+    def compact_session(
+        self,
+        session_id: str,
+        keep_recent: int = 20,
+        max_summary_chars: int = 5000,
+        user_id: int | str | None = None,
+    ) -> dict[str, int | bool]:
+        session_id = self._session_id(session_id)
+        user_id = _normalize_user_id(user_id)
+        messages = self.get_messages(session_id, user_id=user_id)
+        keep_recent = max(2, int(keep_recent))
+        if len(messages) <= keep_recent:
+            return {"compacted": False, "removed": 0}
+        summary = build_summary(messages[:-keep_recent], max_chars=max_summary_chars)
+        if not summary:
+            return {"compacted": False, "removed": 0}
+        with postgres_connection() as connection:
+            rows = connection.execute(
+                "SELECT id FROM messages WHERE session_id = %s ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
+            remove_ids = [int(row["id"]) for row in rows[:-keep_recent]]
+            if remove_ids:
+                connection.execute(
+                    "DELETE FROM messages WHERE session_id = %s AND id = ANY(%s)",
+                    (session_id, remove_ids),
+                )
+            now = utc_now()
+            connection.execute(
+                """INSERT INTO messages(session_id, role, content, created_at)
+                   SELECT %s, 'system', %s, %s
+                   WHERE EXISTS (SELECT 1 FROM sessions WHERE session_id = %s AND user_id = %s)""",
+                (session_id, "【会话摘要】\n" + summary, now, session_id, user_id),
+            )
+        _cache_delete_messages(user_id, session_id)
+        return {"compacted": True, "removed": len(remove_ids)}

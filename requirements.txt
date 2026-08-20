@@ -46,3 +46,4 @@ prometheus-client==0.25.0
 # Evaluation / Debug UI
 gradio==6.20.0
 pandas==3.0.3
+openpyxl==3.1.5
